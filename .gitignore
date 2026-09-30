@@ -1,0 +1,13 @@
+target/
+results/
+figures/
+logs/
+*.csv
+*.pdf
+*.png
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.idea/
+.vscode/
