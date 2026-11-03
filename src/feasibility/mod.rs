@@ -1,14 +1,15 @@
 //! The feasibility checker: policy-independent necessary conditions for
 //! tail-delay targets, assembled into a linear relaxation ([`relaxation`],
-//! [`windows`]) whose phase coefficients are enclosed on a lattice or a grid
-//! ([`coefficients`], [`grid`]) and which is decided with exact certificates
-//! ([`simplex`]). [`rational`] and [`special`] provide the enclosures,
-//! [`model`] and [`distributions`] the models, and [`reference`] the
+//! [`windows`], [`gaps`]) whose phase coefficients are enclosed on a lattice
+//! or a grid ([`coefficients`], [`grid`]) and which is decided with exact
+//! certificates ([`simplex`]). [`rational`] and [`special`] provide the enclosures,
+//! [`model`] and [`distributions`] the models, and [`reference`](mod@reference) the
 //! certified interval of the symmetric case. This module evaluates a model
-//! at a set of levels and computes class bounds, `kappa_L` and operating ranges.
+//! at a set of levels and computes operating ranges.
 
 pub mod coefficients;
 pub mod distributions;
+pub mod gaps;
 pub mod grid;
 pub mod model;
 pub mod rational;
@@ -20,6 +21,7 @@ pub mod windows;
 
 use coefficients::{Lattice, Mode, PhaseCoefficients, lattice, phase_coefficients};
 use distributions::Model;
+use gaps::{GapRow, gap_rows};
 use grid::GridSettings;
 use model::DiscreteModel;
 use num_traits::Zero;
@@ -40,6 +42,8 @@ pub struct Options {
     /// Window constraints for every subset of at least two active classes
     /// instead of the declared subsets.
     pub all_subsets: bool,
+    /// The visit-gap constraints in the full test.
+    pub gap_rows: bool,
 }
 
 impl Options {
@@ -49,6 +53,7 @@ impl Options {
             step: settings.step.clone(),
             bits: settings.bits,
             all_subsets: settings.all_subsets,
+            gap_rows: settings.gap_rows,
         }
     }
 }
@@ -58,6 +63,8 @@ impl Options {
 #[derive(Clone, Debug)]
 pub struct LevelResult {
     pub level: Level,
+    /// The constraint groups imposed.
+    pub groups: Vec<&'static str>,
     pub feasibility: Certified,
     pub min_max: Certified,
     pub min_avg: Certified,
@@ -89,7 +96,7 @@ impl LevelResult {
 
     pub fn to_json(&self) -> Value {
         json!({
-            "level": self.level.name(), "groups": self.level.groups(), "category": self.category(), "rows": self.rows,
+            "level": self.level.name(), "groups": self.groups, "category": self.category(), "rows": self.rows,
             "feasibility": self.feasibility.to_json(), "min_max": self.min_max.to_json(), "min_arrival_weighted": self.min_avg.to_json()
         })
     }
@@ -110,6 +117,9 @@ pub struct PointEvaluation {
     pub lattice_step: Q,
     /// Number of window constraints.
     pub windows: usize,
+    /// Number of visit-gap constraints and the time to generate them, when
+    /// they are requested.
+    pub gaps: Option<(usize, f64)>,
 }
 
 impl PointEvaluation {
@@ -122,12 +132,19 @@ impl PointEvaluation {
     }
 
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "model": self.model.to_json(),
             "lattice_step": self.lattice_step.to_string(), "window_rows": self.windows,
             "timing_ms": {"coefficients": self.coefficient_ms, "windows": self.window_ms, "lp": self.lp_ms, "certificates": self.certificate_ms, "verification": self.verify_ms},
             "levels": self.levels.iter().map(|l| l.to_json()).collect::<Vec<_>>()
-        })
+        });
+        // Recorded only with the visit-gap constraints, so that the records of
+        // the test without them are unchanged.
+        if let Some((rows, ms)) = self.gaps {
+            v["gap_rows"] = json!(rows);
+            v["timing_ms"]["gaps"] = json!(ms);
+        }
+        v
     }
 }
 
@@ -153,6 +170,19 @@ fn window_rows_for(model: &DiscreteModel, opts: &Options) -> Vec<WindowRow> {
     window_rows(model, &default_windows(model), &subsets, opts.bits)
 }
 
+/// The visit-gap constraints of every active class at the declared window
+/// lengths and tangent points ([`gap_rows`]), when `opts.gap_rows` requests
+/// them, with coefficients rounded to [`gaps::ROW_BITS`] fractional bits.
+fn gap_rows_for(
+    model: &DiscreteModel,
+    coef: &PhaseCoefficients,
+    opts: &Options,
+) -> Option<Vec<GapRow>> {
+    let bits = opts.bits.min(gaps::ROW_BITS);
+    opts.gap_rows
+        .then(|| gap_rows(model, &coef.mean_tau, &default_windows(model), bits))
+}
+
 /// Evaluate the relaxation of `model` with the coefficients `coef` at
 /// every level of `levels`: feasibility of the targets and the certified
 /// lower bounds on the worst-class and the arrival-weighted miss probability.
@@ -166,10 +196,14 @@ pub fn evaluate_with(
     let t0 = Instant::now();
     let windows = window_rows_for(model, opts);
     let window_ms = t0.elapsed().as_secs_f64() * 1e3;
+    let t1 = Instant::now();
+    let gaps = gap_rows_for(model, coef, opts);
+    let gap_ms = t1.elapsed().as_secs_f64() * 1e3;
     let ing = Ingredients {
         model,
         coef,
         windows: &windows,
+        gaps: gaps.as_deref(),
     };
     let mut out = Vec::new();
     let (mut lp_ms, mut cert_ms, mut verify_ms) = (0.0, 0.0, 0.0);
@@ -185,6 +219,7 @@ pub fn evaluate_with(
         verify_ms += feasibility.verify_ms + min_max.verify_ms + min_avg.verify_ms;
         out.push(LevelResult {
             level,
+            groups: level.groups_with(gaps.is_some()),
             rows: f.lp.rows.len(),
             feasibility,
             min_max,
@@ -201,6 +236,7 @@ pub fn evaluate_with(
         verify_ms,
         lattice_step: coef.g.clone(),
         windows: windows.len(),
+        gaps: gaps.as_ref().map(|g| (g.len(), gap_ms)),
     }
 }
 
@@ -257,52 +293,6 @@ pub fn evaluate(
     })
 }
 
-/// Certified lower bound on the miss probability of every active class at
-/// one level (`min x_i` over the relaxation without the target rows); `None`
-/// for inactive classes and when no bound is certified.
-pub fn class_bounds(
-    shell: &DiscreteModel,
-    coef: &PhaseCoefficients,
-    opts: &Options,
-    level: Level,
-) -> Vec<Option<f64>> {
-    let windows = window_rows_for(shell, opts);
-    let ing = Ingredients {
-        model: shell,
-        coef,
-        windows: &windows,
-    };
-    (0..shell.n)
-        .map(|i| {
-            if !shell.active(i) {
-                return None;
-            }
-            let r = build(&ing, level, Objective::MinClass(i));
-            certify_minimum(&r.lp).certified_value.as_ref().map(to_f64)
-        })
-        .collect()
-}
-
-/// A certified lower bound on `kappa_L`, the minimum of `kappa` subject to
-/// `x_i <= kappa eps_i` over the relaxation without the target rows. It
-/// lower-bounds the common factor by which all targets would have to be
-/// scaled; a value above one proves the targets jointly infeasible, a value
-/// of at most one proves nothing.
-pub fn scale_bound(
-    shell: &DiscreteModel,
-    coef: &PhaseCoefficients,
-    opts: &Options,
-    level: Level,
-) -> Certified {
-    let windows = window_rows_for(shell, opts);
-    let ing = Ingredients {
-        model: shell,
-        coef,
-        windows: &windows,
-    };
-    certify_minimum(&build(&ing, level, Objective::MinScale).lp)
-}
-
 /// Whether the long-run vector `(nu_uv = nu_pair for every pair, z_j = z,
 /// x_i = x)` satisfies every row of the relaxation with the target rows at
 /// `level`, checked exactly. Membership is necessary, not sufficient: it
@@ -317,10 +307,12 @@ pub fn point_in_relaxation(
     x: &Q,
 ) -> Result<(), String> {
     let windows = window_rows_for(shell, opts);
+    let gaps = gap_rows_for(shell, coef, opts);
     let ing = Ingredients {
         model: shell,
         coef,
         windows: &windows,
+        gaps: gaps.as_deref(),
     };
     let rel = build(&ing, level, Objective::Feasibility);
     let mut y = vec![Q::zero(); rel.lp.nvars];
@@ -403,10 +395,12 @@ pub fn rate_intervals(
     level: Level,
 ) -> Vec<RateInterval> {
     let windows = window_rows_for(shell, opts);
+    let gaps = gap_rows_for(shell, coef, opts);
     let ing = Ingredients {
         model: shell,
         coef,
         windows: &windows,
+        gaps: gaps.as_deref(),
     };
     let pair = |name: String, min_obj: Objective, max_obj: Objective| RateInterval {
         name,

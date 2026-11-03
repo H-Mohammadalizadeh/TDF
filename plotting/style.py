@@ -46,18 +46,13 @@ plt.rcParams.update({
 LARGE = {'axes.labelsize': FS + 1.5, 'xtick.labelsize': FS + 1, 'ytick.labelsize': FS + 1,
          'legend.fontsize': FS + .5}
 
-# Reconfiguration-time distributions: legend names and marker shapes (Pareto-3/2 shares the Pareto marker).
+# Legend names of the reconfiguration-time distributions.
 NAME = {'det': 'Deterministic', 'exp': 'Exponential', 'gamma': 'Gamma',
-        'tnorm': 'Truncated normal', 'lognormal': 'Lognormal', 'pareto': 'Pareto',
-        'pareto_heavy': 'Pareto 3/2'}
-MARK = {'det': 's', 'exp': 'o', 'gamma': '^', 'tnorm': 'D', 'lognormal': 'v', 'pareto': 'P',
-        'pareto_heavy': 'P'}
+        'tnorm': 'Truncated normal', 'lognormal': 'Lognormal', 'pareto': 'Pareto'}
 
 INK = '#222222'
-BLUE = '#2E5C8A'  # steel blue: the window constraint; the certified rate range; E[tau_12] < E[tau_21]
-RED = '#9E2A2B'   # brick red: the phase constraint; the OJF counterexample; E[tau_12] > E[tau_21]
-# The target: a thin black line with small dashes, above shaded zones and below data.
-TARGET_STYLE = dict(color=INK, lw=.6, ls=(0, (1.4, 1.1)), zorder=1.5)
+BLUE = '#2E5C8A'
+RED = '#9E2A2B'
 FRAMED = dict(frameon=True, fancybox=False, framealpha=1, facecolor='white', edgecolor='#555555')
 
 PDF_METADATA = {'Creator': 'tail-delay-feasibility', 'CreationDate': None}  # no date: reproducible PDFs
@@ -97,24 +92,10 @@ def tint(color, a=.3):
     return '#%02X%02X%02X' % tuple(round(255 - a * (255 - v)) for v in rgb)
 
 
-def tidy(ax):
-    """Horizontal grid lines behind the data; no top and right spines."""
-    ax.grid(False)
-    ax.grid(axis='y', which='major')
-    ax.set_axisbelow(True)
-    for side in ('top', 'right'):
-        ax.spines[side].set_visible(False)
-
-
 def no_minor(ax):
     """No minor ticks on either axis."""
     ax.xaxis.set_minor_locator(NullLocator())
     ax.yaxis.set_minor_locator(NullLocator())
-
-
-def target_line(ax):
-    """The 1 % target on an axis in percent."""
-    ax.axhline(1.0, **TARGET_STYLE)
 
 
 def framed_legend(fig, handles, ncol, **kw):
@@ -189,8 +170,7 @@ def check_layout(fig, name):
 
 
 def save(fig, folder, name):
-    """Check the layout, then write `name`.pdf and a 300 dpi `name`.png into `folder`."""
+    """Check the layout, then write `name`.pdf into `folder`."""
     check_layout(fig, name)
     fig.savefig(folder / f'{name}.pdf', metadata={'Title': name, **PDF_METADATA})
-    fig.savefig(folder / f'{name}.png', dpi=300)
     plt.close(fig)

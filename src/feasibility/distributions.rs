@@ -872,6 +872,27 @@ impl Model {
         m
     }
 
+    /// Every arrival rate multiplied by `k`. The phase coefficients do not depend on the arrival
+    /// rates, so they are those of the unscaled model.
+    pub fn with_arrivals_scaled(&self, k: &Q) -> Model {
+        let mut m = self.clone();
+        m.lam = self.lam.iter().map(|l| l * k).collect();
+        m.name = format!("{}|arrivals x {}", self.name, k);
+        m
+    }
+
+    /// Every deadline multiplied by `k > 0`, targets unchanged. What depends on the deadlines
+    /// follows them: the grid step is refined so that it divides every new deadline
+    /// ([`super::grid::grid_step`]), the coefficients are computed and cached under the new
+    /// deadlines, and the declared window lengths ([`super::windows::default_windows`]) are
+    /// offsets from the new deadlines.
+    pub fn with_deadlines_scaled(&self, k: &Q) -> Model {
+        let mut m = self.clone();
+        m.d = self.d.iter().map(|x| x * k).collect();
+        m.name = format!("{}|deadlines x {}", self.name, k);
+        m
+    }
+
     /// Descriptions of the distinct reconfiguration-time distributions, in
     /// pair order.
     pub fn describe_laws(&self, bits: u32) -> Value {
@@ -986,6 +1007,10 @@ mod tests {
         assert_eq!(back.law(0, 1), m.law(0, 1));
         let s = m.with_reconfiguration_scaled(&qr(3, 4));
         assert_eq!(s.law(1, 2).mean(64).0, qr(3, 8));
+        assert_eq!(m.with_arrivals_scaled(&qr(1, 2)).lam, vec![qr(1, 3); 3]);
+        let longer = m.with_deadlines_scaled(&qr(7, 4));
+        assert_eq!(longer.d, vec![qi(7); 3]);
+        assert_eq!(longer.eps, m.eps);
         let shell = m.lp_shell(64);
         assert_eq!(shell.n, 3);
     }

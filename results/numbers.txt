@@ -1,0 +1,79 @@
+== VI-A: verdicts on the grid of Table I
+  target 1/1000  decided 1448 of 1890 (77 %): infeasible 1065 (56 %), feasible 383 (20 %), undetermined 442 (23 %)
+  target 1/100   decided 1485 of 1890 (79 %): infeasible 918 (49 %), feasible 567 (30 %), undetermined 405 (21 %)
+  target 1/20    decided 1515 of 1890 (80 %): infeasible 788 (42 %), feasible 727 (38 %), undetermined 375 (20 %)
+  1 % target: 288 of 918 infeasible settings (31 %) excluded by the single-class bound, 630 (69 %) need the reconfiguration constraints
+  1 % target, exclusions by load: single-class bound | added by the window constraints | added by unavoidable misses | full test | added by the next-visit bound
+    load 0.05    30    0    6   40    1
+    load 0.1     30    0    9   45    2
+    load 0.2     30    0   13   52    2
+    load 0.3     30    0   19   56    3
+    load 0.5     30    0   24   65    7
+    load 0.7     30   24   28  108   35
+    load 0.85    36   96   24  162   30
+    load 0.9     36  126   24  186   24
+    load 0.95    36  162   24  204    6
+  next-visit bound needed for 98 of 1065 (9 %) at 1/1000; 110 of 918 (12 %) at 1/100; 132 of 788 (17 %) at 1/20;
+== VI-A: edges of four classes at the 1 % target (Fig. 1), threshold in s
+    load  bound det  bound Pareto  feasible det  feasible Pareto  feasible det 2x  feasible det 10x  d_nec  d_suf
+    0.05       1.66          2.01          1.90             2.27             1.50              1.26  1.205  1.212
+    0.1        1.72          2.09          2.28             2.73             1.67              1.35  1.253  1.279
+    0.2        1.82          2.26          3.61             4.31             2.16              1.56  1.333  1.439
+    0.3        1.89          2.36          4.42             5.29             3.02              1.85  1.397  1.645
+    0.4        1.94          2.43          5.35             6.13             3.73              2.27  1.451  1.919
+    0.5        1.99          2.49          6.61             7.33             4.66              2.96  1.498  2.303
+    0.6        2.23          2.53          8.45             9.10             6.03              3.93  1.538  2.878
+    0.7        3.67          3.67         11.54            12.16             8.27              5.44  1.573  3.838
+    0.8        6.04          6.17         17.56            18.10            12.70              8.42  1.605  5.756
+    0.85       8.09          8.36         23.76            24.26                -                 -  1.619  7.675
+    0.9       13.43         13.43         35.95            36.39            26.03             17.32  1.633 11.513
+    0.95      29.96         28.22         72.41            72.81            52.46             35.03  1.647 23.026
+  load 0.5: 2x faster reconfiguration lowers the feasible edge by 30 %, 10x by 55 %
+  mean time away I of four classes at load 0.9: 15.5 s; largest d_nec up to load 0.95: 1.647 s
+== VI-A: same mean and variance, opposite verdicts (2 classes, load 0.05, d = 3 s, 0.1 % target)
+  gamma   certified_feasible ojf (lower bound 0.01272 %, upper bound 0.05614 %)
+  pareto  certified_infeasible  (lower bound 0.1197 %, upper bound 0.1861 %)
+  P(tau > 3 s): Pareto 0.00137, gamma 2.76e-06, ratio 498
+== VI-A: exclusions per distribution (of 315 settings each)
+  target 1/1000 det 163 tnorm 163 gamma 164 lognormal 172 pareto 201 exp 202
+  target 1/20   det 130 tnorm 130 gamma 130 lognormal 130 pareto 130 exp 138
+== VI-B: the gap for four classes at load 0.9 (Fig. 2), in pp
+  deterministic, I/4 <= d <= 3I/4, mean 1/2 s: 28.13 to 31.19
+  deterministic, I/4 <= d <= 3I/4, mean 500 s: 0.79 to 0.94
+  deterministic, d = I/2, mean 1/2 s: gap 30.99 = 3.69 above the limit (EC) + 27.30 below it (test)
+  deterministic, d = I/2, mean 50 s: gap 2.94 = 0.02 above the limit (EC) + 2.92 below it (test)
+  d = I, mean 500 s: deterministic 0.93, exponential 7.18, Pareto 3.74
+  class-i arrivals while away at 0.5 s: 13.95, relative fluctuation 26.77 %
+  class-i arrivals while away at 50 s: 1395, relative fluctuation 2.68 %
+  log-log slopes of the gap over the mean: det 1/4 -0.507; det 1/2 -0.507; det 3/4 -0.516; exp 1/4 -0.507; exp 1/2 -0.510; exp 3/4 -0.466; pareto 1/4 -0.507; pareto 1/2 -0.508; pareto 3/4 -0.519;
+  certified EC bound inside the 95 % interval of simulated EC in 24 of 24 settings; largest distance 0.73 pp
+== VI-C: classes (Fig. 3), deterministic reconfiguration with mean 0.5 s, 1 % target
+  load 0.5 (I grows by 1 s per class)
+    N       I   infeasible edge   d/I   feasible edge   d/I
+    2      1.50              1.87  1.25            4.19  2.79
+    3      2.50              1.94  0.78            5.45  2.18
+    4      3.50              1.97  0.56            6.61  1.89
+    6      5.50              2.09  0.38            8.86  1.61
+    8      7.50              3.32  0.44           11.10  1.48
+    12    11.50              5.19  0.45           15.26  1.33
+    16    15.50              7.06  0.46           19.50  1.26
+  load 0.9 (I grows by 5 s per class)
+    N       I   infeasible edge   d/I   feasible edge   d/I
+    2      5.50              4.96  0.90           22.74  4.13
+    3     10.50              9.91  0.94           29.44  2.80
+    4     15.50             14.80  0.95           35.79  2.31
+    6     25.50             24.53  0.96           47.93  1.88
+    8     35.50             34.26  0.97           59.55  1.68
+    12    55.50             53.70  0.97           82.44  1.49
+    16    75.50             73.14  0.97          103.45  1.37
+== VI-D: limitations and cost
+  half the time-grid step (four classes): 0 of 1134 verdicts change; the bound moves by at most 0.018 pp,
+  and by at most 4.5 % of its value where it is at least the smallest target, 0.1 %
+  N = 2: at most 94 constraints, exact simplex in 48 of 1134 cases (4.2 %)
+  N = 3: at most 163 constraints, exact simplex in 60 of 1134 cases (5.3 %)
+  N = 4: at most 268 constraints, exact simplex in 63 of 1134 cases (5.6 %)
+  N = 6: at most 451 constraints, exact simplex in 89 of 1134 cases (7.8 %)
+  N = 8: at most 670 constraints, exact simplex in 169 of 1134 cases (14.9 %)
+  N = 16 (Fig. 3): 1793 to 2026 constraints
+== Appendix A: the OJF interval against the closed form (two classes, mean 0.5 s, step 0.5 ms)
+  20 of 20 intervals contain the exact miss probability; the upper end exceeds it by at most 0.1135 pp

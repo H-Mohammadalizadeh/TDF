@@ -3,12 +3,13 @@
 //! benchmark against an independent Lindley simulation and its transform identity; the no-waiting
 //! miss probability (`floor`), the benchmark and the baseline bound `U_simple` against closed
 //! forms and the relaxation; OJF's rate identities and the certified rate ranges; the workload
-//! bound; the target scale bound and the membership of OJF's long-run vector in the relaxation;
+//! bound; the membership of OJF's long-run vector in the relaxation;
 //! detours in the completion table; and the rejection of settings outside the symmetric case.
 
 use serde_json::json;
 use tdf::feasibility::coefficients::{Mode, h_table, lattice};
 use tdf::feasibility::distributions::{Model, profile};
+use tdf::feasibility::gaps::gap_rows;
 use tdf::feasibility::grid::GridSettings;
 use tdf::feasibility::model::{DiscreteLaw, DiscreteModel};
 use tdf::feasibility::rational::{Q, exp_neg, parse_q, qi, qr, to_f64};
@@ -27,6 +28,7 @@ fn settings(step: &str) -> GridSettings {
         sweeps: 2,
         shortcut: true,
         all_subsets: false,
+        gap_rows: false,
     }
 }
 
@@ -35,7 +37,61 @@ fn options(s: &GridSettings) -> Options {
         step: s.step.clone(),
         bits: s.bits,
         all_subsets: s.all_subsets,
+        gap_rows: s.gap_rows,
     }
+}
+
+/// Check that OJF's exact long-run vector (`nu_uv` and `z_j` from its rate identities, `x_i` at
+/// the upper end of the enclosure of the exact miss probability) satisfies every row of the full
+/// test, without and with the visit-gap constraints; returns the labels of the visit-gap rows.
+fn ojf_vector_satisfies_every_row(model: &Model, s: &GridSettings) -> Vec<String> {
+    let ev = evaluate(model, s, &[Level::Full], None).unwrap();
+    let h = Homogeneous::from_model(model).unwrap();
+    let bench = h.exact_exponential_benchmark(s.bits).unwrap().unwrap();
+    let rates = h.reference_rates(s.bits);
+    let shell = model.lp_shell(s.bits);
+    let windows = window_rows(
+        &shell,
+        &default_windows(&shell),
+        &default_subsets(&shell),
+        s.bits,
+    );
+    let gaps = gap_rows(&shell, &ev.lower.mean_tau, &default_windows(&shell), s.bits);
+    let mut labels = Vec::new();
+    for with_gaps in [false, true] {
+        let ing = Ingredients {
+            model: &shell,
+            coef: &ev.lower,
+            windows: &windows,
+            gaps: with_gaps.then_some(gaps.as_slice()),
+        };
+        let rel = build(&ing, Level::Full, Objective::Feasibility);
+        let mut y = vec![Q::from_integer(0.into()); rel.lp.nvars];
+        for row in &rel.nu {
+            for k in row.iter().flatten() {
+                y[*k] = rates.nu_pair.clone();
+            }
+        }
+        for &k in &rel.z {
+            y[k] = rates.z.0.clone();
+        }
+        for &k in &rel.x {
+            y[k] = bench.miss.1.clone();
+        }
+        verify_primal(&rel.lp, &y).unwrap_or_else(|e| {
+            panic!("OJF's long-run vector violates the relaxation (gap rows {with_gaps}): {e}")
+        });
+        if with_gaps {
+            labels = rel
+                .lp
+                .rows
+                .iter()
+                .filter(|r| r.label.starts_with("gap_"))
+                .map(|r| r.label.clone())
+                .collect();
+        }
+    }
+    labels
 }
 
 /// `N = 2`, `mu = 4`, `tau ~ Exp(2)`, load `rho`, deadline `d`, target 1 %.
@@ -289,6 +345,7 @@ fn the_feasible_benchmark_point_lies_in_the_relaxation_and_is_certified_feasible
         model: &shell,
         coef: &ev.lower,
         windows: &windows,
+        gaps: None,
     };
     let rel = build(&ing, Level::Full, Objective::Feasibility);
     let rates = h.reference_rates(s.bits);
@@ -312,6 +369,29 @@ fn the_feasible_benchmark_point_lies_in_the_relaxation_and_is_certified_feasible
     }
     verify_primal(&rel.lp, &y)
         .expect("the reference policy's long-run vector is a point of the relaxation");
+    // The same vector satisfies the visit-gap constraints; at this load only the window rows of
+    // the gap group are not vacuous.
+    let labels = ojf_vector_satisfies_every_row(&model, &s);
+    assert!(!labels.is_empty() && labels.iter().all(|l| l.starts_with("gap_window[")));
+}
+
+#[test]
+fn ojf_satisfies_the_visit_gap_rows_at_a_high_closed_form_load() {
+    // N = 2, tau ~ Exp(2), mu = 4, rho = 9/20: rho_F = 9/10 and m_F = exp(-(2 - 9/5) 3) = 0.549.
+    // The target 3/5 lies above m_F, so the target rows hold as well.
+    let s = settings("1/200");
+    let law = profile("exp", &qr(1, 2), &qi(1)).unwrap();
+    let model = Model::balanced("high", &law, 2, &qr(9, 20), &qi(3), &qr(3, 5));
+    let h = Homogeneous::from_model(&model).unwrap();
+    let bench = h.exact_exponential_benchmark(s.bits).unwrap().unwrap();
+    assert!((to_f64(&bench.miss.0) - (-0.6f64).exp()).abs() < 1e-12);
+    let labels = ojf_vector_satisfies_every_row(&model, &s);
+    for family in ["gap_window[", "gap_weak[", "gap_strong["] {
+        assert!(
+            labels.iter().any(|l| l.starts_with(family)),
+            "no {family} rows: {labels:?}"
+        );
+    }
 }
 
 #[test]
@@ -592,28 +672,14 @@ fn workload_bound_encloses_the_exact_tail_and_starts_at_u_simple() {
 }
 
 #[test]
-fn the_scale_bound_and_the_rate_membership_check_agree_with_the_verdicts() {
-    use tdf::feasibility::{point_in_relaxation, scale_bound};
+fn the_rate_membership_check_agrees_with_the_verdicts() {
+    use tdf::feasibility::point_in_relaxation;
     let s = settings("1/200");
-    // Excluded at 1 %: kappa_L > 1.
-    let model = benchmark_model("1/20", "2");
-    let ev = evaluate(&model, &s, &[Level::Full], None).unwrap();
-    let shell = model.lp_shell(s.bits);
-    let kappa = scale_bound(&shell, &ev.lower, &options(&s), Level::Full);
-    assert_eq!(kappa.status, "certified_lower_bound");
-    let k = to_f64(kappa.certified_value.as_ref().unwrap());
-    assert!(
-        k > 1.0 && (k - 2.02).abs() < 0.1,
-        "kappa_L = {k} should be the bound 2.02 % over the target 1 %"
-    );
-    // Not excluded at 1 %: kappa_L < 1, and OJF's rates with x_i = eps lie in the relaxation at
-    // eps = 1/250 although OJF misses that target (exp(-5.4) ~ 0.452 %): membership is only
-    // necessary.
+    // OJF's rates with x_i = eps lie in the relaxation at eps = 1/250 although OJF misses that
+    // target (exp(-5.4) ~ 0.452 %): membership is only necessary.
     let model = benchmark_model("1/20", "3");
     let ev = evaluate(&model, &s, &[Level::Full], None).unwrap();
     let shell = model.lp_shell(s.bits);
-    let kappa = scale_bound(&shell, &ev.lower, &options(&s), Level::Full);
-    assert!(to_f64(kappa.certified_value.as_ref().unwrap()) < 1.0);
     let h = Homogeneous::from_model(&model).unwrap();
     let rates = h.reference_rates(s.bits);
     let eps = qr(1, 250);

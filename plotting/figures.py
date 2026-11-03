@@ -1,279 +1,281 @@
-"""The paper's three evaluation figures, drawn from the stored results at their printed size.
+"""The three figures of Section VI, drawn from the tables of scripts/tables.sh (plotting only).
 
-fig3_where        where targets are infeasible: L_LP of the six distributions at three loads over the
-                  zones that the window constraint and the phase constraint rule out alone, and L_LP
-                  versus the deadline for gamma reconfiguration
-fig4_bracket      the certified interval [L_safe, U^+] of the closed-form case with the simulated OJF
-                  tails, and the interval width for three distributions, with U^+ and with U_0
-fig5_scheduling   the certified range of the total reconfiguration rate versus the target with the OJF
-                  counterexample, and kappa_L of the directional case under service and reconfiguration
-                  changes
+    python3 plotting/figures.py [--tables results/tables] [--out figures]
+
+fig_verdicts  Fig. 1: verdicts for four classes and a 1 % target. Left: mean reconfiguration time
+              0.5 s, edges for deterministic (solid) and Pareto (dashed) reconfiguration times.
+              Right: the feasible edge as reconfiguration becomes 2, 10 and infinitely many times
+              faster (deterministic times).
+fig_gap       Fig. 2: the gap between the certificates for four classes at load 0.9 against the mean
+              reconfiguration time. Left: deterministic reconfiguration, I/4 <= d <= 3I/4 (shaded),
+              line at d = I/2. Right: d = I for three distributions.
+fig_nclasses  Fig. 3: verdicts for a 1 % target against the number of classes (deterministic
+              reconfiguration, mean 0.5 s) at loads 0.5 and 0.9, with the mean time away I (dotted).
 """
+import argparse
+import csv
+from fractions import Fraction
+from pathlib import Path
+
 import numpy as np
+
+import style as s
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.patheffects import withStroke
 
-import data
-import style as s
-from style import BLUE, COLW, INK, MARK, NAME, RED
-
-
-# where targets are infeasible
-
-# Equation numbers of the window constraint and the phase constraint in the manuscript; the legend
-# names the two zones after them.
-EQ_WINDOW = 6
-EQ_PHASE = 9
-
-BAND = '#f0f0f0'  # the shaded window behind each load group
-MS = 4.3          # marker size in points
+INK, BLUE, RED = s.INK, s.BLUE, s.RED
+FILL = {'infeasible': s.tint(RED, .28), 'undetermined': s.tint('#7E8587', .26),
+        'feasible': s.tint(BLUE, .28)}
 
 
-def _zone(ax, x, top, color, z):
-    """A tinted zone below the bound `top` (what one constraint rules out alone), with a thin edge on top."""
-    ax.fill_between(x, [1e-12] * len(x), top, color=s.tint(color), lw=0, zorder=z)
-    ax.plot(x, top, color=color, lw=.7, solid_capstyle='butt', zorder=z + .01)
+def rows(folder, name):
+    with (folder / name).open() as handle:
+        return list(csv.DictReader(handle))
 
 
-def _mark(infeasible):
-    """A filled marker with a thin white rim if the target is certified infeasible, else an open marker."""
-    if infeasible:
-        return dict(color=INK, mfc=INK, mec='white', mew=.25, ms=MS + .5)
-    return dict(color=INK, mfc='white', mec=INK, mew=.6, ms=MS)
+# ---- Fig. 1 ----
+
+EDGE = dict(color=INK, lw=.7, zorder=3)
+DASH = (0, (3, 1.5))
+HALO = [withStroke(linewidth=1.6, foreground='white')]
+# feasible edges of deterministic reconfiguration: mean [s], contour label, load of the label
+SPEEDUP = ((.5, r'1$\times$', .50), (.25, r'2$\times$', .62), (.05, r'10$\times$', .74))
+LABEL_AT = (.50, .62, .74, .86)  # loads of the labels 1x, 2x, 10x and infinity (where the lines are apart)
+BANDS = (.28, .28, .28, .28)     # one blue for every speed-up band; the contour lines tell them apart
+X0, X1 = .05, .95
+Y0, Y1 = 1, 100
 
 
-@s.large_text
-def fig3_where(res, out):
-    """Left: L_LP at d = 2 of the six distributions at three loads (markers), over the zones that the
-    window constraint (blue; it depends on the mean reconfiguration time only) and the phase constraint
-    (red) rule out alone. Right: L_LP versus the deadline for gamma reconfiguration at the same loads.
-    N = 4 and the 1 % target throughout."""
-    rows = [r for r in res.core() if r['n'] == '4']
-    loads = ('1/10', '1/2', '9/10')
-    fig = s.figure(COLW, 1.60, left=.135, right=.995, bottom=.206, top=.666, wspace=.36)
-    axa, axb = fig.subplots(1, 2, gridspec_kw={'width_ratios': [1.15, 1]})
-    for ax in (axa, axb):
-        s.tidy(ax)
-        ax.set_yscale('log')
-        s.target_line(ax)
-
-    # left: one group per load, the six distributions side by side over their zones
-    width = .145  # spacing within a group; groups are one unit apart
-    for g, rho in enumerate(loads):
-        cells = [data.one(rows, profile=p, d='2', rho=rho) for p in data.PROFILES]
-        window = data.bound(cells[0], 'base_windows')  # one zone: it depends on the mean only
-        assert all(abs(data.bound(r, 'base_windows') - window) <= 1e-9 * max(1, window) for r in cells), rho
-        phase = [data.bound(r, 'base_phases') for r in cells]
-        axa.axvspan(g - .45, g + .45, color=BAND, lw=0, zorder=0)
-        z_window, z_phase = (1.3, 1.2) if window < max(phase) else (1.2, 1.3)  # the lower zone on top
-        _zone(axa, [g - .42, g + .42], [window, window], BLUE, z_window)
-        for k, (p, r) in enumerate(zip(data.PROFILES, cells)):
-            x = g + (k - 2.5) * width
-            _zone(axa, [x - .055, x + .055], [phase[k]] * 2, RED, z_phase)
-            axa.plot(x, data.bound(r), marker=MARK[p], ls='none', zorder=3, **_mark(data.excluded(r)))
-    axa.set_xlim(-.5, len(loads) - .5)
-    axa.set_xticks(range(len(loads)), [f'{data.q(rho):g}' for rho in loads])
-    axa.set_xlabel(r'$\rho$')
-    axa.set_ylabel(r'$L_{\mathrm{LP}}$ [%]')
-    axa.set_ylim(.02, 60)
-    axa.set_yticks([.1, 1, 10], [r'$10^{-1}$', r'$10^{0}$', r'$10^{1}$'])
-    s.no_minor(axa)
-
-    # right: L_LP versus the deadline for gamma reconfiguration, one line per load
-    floor = 1e-6  # the lowest tick; smaller values are drawn there
-    xb = np.arange(len(data.DS))
-    styles = [(0, (3.2, 1.2, 1, 1.2)), (0, (4, 1.5)), '-']  # dash-dot, dashed, solid: none like the target
-    for rho, ls in zip(loads, styles):
-        cells = [data.one(rows, profile='gamma', d=d, rho=rho) for d in data.DS]
-        y = [max(data.bound(r), floor) for r in cells]
-        axb.plot(xb, y, color=INK, ls=ls, lw=.8, zorder=2)
-        for xi, yi, r in zip(xb, y, cells):
-            axb.plot(xi, yi, marker=MARK['gamma'], ls='none', zorder=3, **_mark(data.excluded(r)))
-    axb.set_xticks(xb, data.DS)
-    axb.set_xlabel('$d$')
-    axb.set_ylim(floor * .6, 60)
-    axb.set_yticks([1e-6, 1e-4, 1e-2, 1], [r'$10^{-6}$', r'$10^{-4}$', r'$10^{-2}$', r'$10^{0}$'])
-    s.no_minor(axb)
-
-    # one framed legend for both panels: the distributions, the two zones and the target, the loads
-    handles = [Line2D([], [], color=INK, marker=MARK[p], ls='none', ms=MS, label=NAME[p]) for p in data.PROFILES]
-    handles += [Patch(facecolor=s.tint(BLUE), edgecolor=BLUE, lw=.7, label=f'Eq. ({EQ_WINDOW})'),
-                Patch(facecolor=s.tint(RED), edgecolor=RED, lw=.7, label=f'Eq. ({EQ_PHASE})'),
-                Line2D([], [], label=r'$\varepsilon_i=1\%$', **s.TARGET_STYLE)]
-    handles += [Line2D([], [], color=INK, ls=ls, lw=.8, label=rf'$\rho={data.q(rho):g}$')
-                for rho, ls in zip(loads, styles)]
-    s.framed_legend(fig, handles, 4, handlelength=1.4)
-    s.save(fig, out, 'fig3_where')
+def edge(table, law, mean, side):
+    """Loads and interpolated 1 % thresholds of one edge (bracketed crossings only)."""
+    pts = sorted((float(r['rho']), float(r['d_cross'])) for r in table
+                 if r['law'] == law and abs(float(r['mean']) - mean) < 1e-12 and r['side'] == side
+                 and r['status'] == 'bracketed')
+    return np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
 
 
-# certified intervals
+def on_grid(x, y, grid):
+    """An edge on a fine load grid, linear in log(d) between the computed loads."""
+    return np.exp(np.interp(grid, x, np.log(y)))
 
-DEADLINE_COLOR = {'2': '#7E8587', '3': '#C9A227'}  # slate gray, mustard yellow: not the constraint colors
-GAP_N, GAP_D = 2, '2'  # the setting of the interval widths in the right panel
-GAP_MS = MS + .5       # as large as the filled markers of `_mark`
+
+def regions(ax, x, lo, hi):
+    """Certified infeasible below `lo`, undetermined between, certified feasible above `hi`, with
+    solid edges."""
+    ax.fill_between(x, Y0, lo, color=FILL['infeasible'], lw=0, zorder=0)
+    ax.fill_between(x, lo, hi, color=FILL['undetermined'], lw=0, zorder=0)
+    ax.fill_between(x, hi, Y1, color=FILL['feasible'], lw=0, zorder=0)
+    ax.plot(x, lo, **EDGE)
+    ax.plot(x, hi, **EDGE)
+
+
+def axes_style(ax, label, top=Y1, ticks=(1, 3, 10, 30, 100), xlim=(X0, X1), xticks=(.1, .3, .5, .7, .9)):
+    ax.set_xlim(*xlim)
+    ax.set_ylim(Y0, top)
+    ax.set_yscale('log')
+    ax.set_xticks(xticks, [f'{t:g}' for t in xticks])
+    ax.set_yticks(ticks, [f'{t:g}' for t in ticks])
+    s.no_minor(ax)
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    ax.set_xlabel(r'$\rho$')
+    ax.text(.5, .97, label, transform=ax.transAxes, ha='center', va='top', color=INK, zorder=6)
 
 
 @s.large_text
-def fig4_bracket(res, out):
-    """Left: the certified interval [L_safe, U^+] of the closed-form case (N = 2, exponential
-    reconfiguration) versus the load, one band per deadline, with the simulated OJF tails. Right: the
-    width U^+ - L_safe at N = 2 and d = 2 for three distributions, and the width with U_0 in place of U^+."""
-    rows = res.brackets(data.BENCHMARK)
-    sims = res.ojf_rows()
-    fig = s.figure(COLW, 1.60, left=.13, right=.985, bottom=.218, top=.747, wspace=.47)
-    axa, axb = fig.subplots(1, 2)
+def fig_verdicts(tables, out):
+    table = rows(tables, 'edges.csv')
+    closed = rows(tables, 'edges_closed.csv')
+    fig = s.figure(s.COLW, 1.35, left=.115, right=.985, bottom=.235, top=.69, wspace=.08)
+    axa, axb = fig.subplots(1, 2, sharey=True)
+    grid = np.linspace(X0, X1, 400)
 
-    # left: the interval as a band per deadline (its upper edge U^+ is the exact miss probability of OJF)
-    # and the simulated OJF tails (x)
-    s.tidy(axa)
-    axa.set_xscale('log')
-    axa.set_yscale('log')
-    for d, color in DEADLINE_COLOR.items():
-        sel = sorted([r for r in rows if r['d'] == d], key=lambda r: r['rho'])
-        x = np.array([r['rho'] for r in sel])
-        lower = np.array([r['safe'] for r in sel])
-        upper = np.array([r['u_exact'] for r in sel])
-        axa.fill_between(x, lower, upper, color=s.tint(color, .35), lw=0, zorder=1)
-        axa.plot(x, lower, color=color, lw=.9, zorder=3)
-        axa.plot(x, upper, color=color, lw=.9, zorder=3)
-        for v in sims:
-            tail = next(t for t in v['tails'] if abs(t['threshold_f64'] - float(d)) < 1e-9)
-            axa.plot([v['rho_f64']], [100 * tail['estimate']], marker='x', ms=3.2, mew=.6, color=INK, ls='none',
-                     zorder=5)
-    s.target_line(axa)
-    axa.set_xlim(6e-5, .6)
-    axa.set_ylim(.1, 100)
-    axa.set_xticks([1e-4, 1e-3, 1e-2, 1e-1], [r'$10^{-4}$', r'$10^{-3}$', r'$10^{-2}$', r'$10^{-1}$'])
-    axa.set_yticks([.1, 1, 10, 100], [r'$0.1$', r'$1$', r'$10$', r'$100$'])
-    s.no_minor(axa)
-    axa.set_xlabel(r'$\rho$')
-    axa.set_ylabel(r'$m$ [%]')
+    # left: the verdicts at mean 0.5 s (deterministic), and the two edges for Pareto (dashed)
+    regions(axa, grid, on_grid(*edge(table, 'det', .5, 'bound'), grid),
+            on_grid(*edge(table, 'det', .5, 'witness'), grid))
+    for side in ('bound', 'witness'):
+        axa.plot(grid, on_grid(*edge(table, 'pareto', .5, side), grid), ls=DASH, **EDGE)
+    axes_style(axa, r'$\bar\tau=0.5$ s')
+    axa.set_ylabel(r'$d$ [s]')
 
-    # right: the width U^+ - L_safe, one line per distribution, over the width U_0 - L_safe; U_0 is drawn
-    # once, for gamma: within the axes the three distributions agree within 5 %, and coinciding lines
-    # would draw bolder
-    s.tidy(axb)
-    axb.set_xscale('log')
-    axb.set_yscale('log')
-    series = data.gap_series(res.brackets(data.LIGHT_LOAD), res.brackets(data.FINITE_LOAD), GAP_D)
-    dists = ('det', 'gamma', 'pareto_heavy')
-    loads = sorted({k[2] for k in series if k[1] == GAP_N})
-    at = [[series[(p, GAP_N, x)] for p in dists] for x in loads]
-    u0 = [[r['u_simple'] - r['safe'] for r in rs] for rs in at]
-    assert all(max(v) <= 1.05 * min(v) for v in u0 if max(v) <= 25), 'U_0 widths differ visibly'
-    axb.plot(loads, [v[dists.index('gamma')] for v in u0], color=INK, lw=.8, zorder=2)
-    for k, p in enumerate(dists):
-        axb.plot(loads, [rs[k]['gap'] for rs in at], color=INK, lw=.8, marker=MARK[p], ms=GAP_MS,
-                 mfc=INK, mec='white', mew=.25, zorder=4)
-    axb.set_xlim(7e-4, .45)
-    axb.set_ylim(.08, 25)  # U_0 leaves the top at high load; the three widths get the room
-    axb.set_xticks([1e-3, 1e-2, 1e-1], [r'$10^{-3}$', r'$10^{-2}$', r'$10^{-1}$'])
-    axb.set_yticks([.1, 1, 10], [r'$0.1$', r'$1$', r'$10$'])
-    s.no_minor(axb)
-    axb.set_xlabel(r'$\rho$')
-    axb.set_ylabel('width [pp]')
+    # the limits come first: the contour labels take their angle and gap from the final axes
+    axes_style(axb, r'$\bar\tau\to0$')
+    # right: the verdicts as the reconfiguration times shrink to zero, and where certified feasibility
+    # starts at the current reconfiguration time and after reconfiguring 2 and 10 times faster
+    rho = np.array([float(r['rho']) for r in closed])
+    nec = np.interp(grid, rho, [float(r['d_nec']) for r in closed])
+    suf = np.interp(grid, rho, [float(r['d_suf']) for r in closed])
+    # the speed-up that certified feasibility needs, as a field over (load, threshold): the log of the
+    # factor, interpolated in log d between the feasible edges at 1x, 2x and 10x and the edge of instant
+    # reconfiguration (level 100, labelled infinity), larger below it. Below the edge of instant
+    # reconfiguration nothing is filled.
+    edges = {mean: on_grid(*edge(table, 'det', mean, 'witness'), grid) for mean, _, _ in SPEEDUP}
+    logd = np.linspace(np.log10(Y0), np.log10(Y1), 500)
+    field = np.empty((len(logd), len(grid)))
+    for k in range(len(grid)):
+        knots = np.log10([suf[k], edges[.05][k], edges[.25][k], edges[.5][k]])
+        field[:, k] = np.interp(logd, np.concatenate([[knots[0] - 2], knots, [knots[-1] + 2]]),
+                                np.log10([1e4, 100, 10, 2, 1, 1e-2]))
+    levels = np.log10([1, 2, 10, 100])
+    axb.contourf(grid, 10 ** logd, field, levels=np.concatenate([[field.min()], levels]),
+                 colors=[s.tint(BLUE, a) for a in BANDS], zorder=0)
+    # below the edge of instant reconfiguration: undetermined even then, and infeasible at every speed
+    axb.fill_between(grid, Y0, nec, color=FILL['infeasible'], lw=0, zorder=0)
+    axb.fill_between(grid, nec, suf, color=FILL['undetermined'], lw=0, zorder=0)
+    axb.plot(grid, nec, **EDGE)
+    # the speed-up contours in dark gray; the last one (infinity) is the solid edge of the undetermined region
+    contours = axb.contour(grid, 10 ** logd, field, levels=levels, colors=['#4A4A4A'] * 3 + [INK],
+                           linewidths=[.6, .6, .6, EDGE['lw']], zorder=3)
+    texts = [text for _, text, _ in SPEEDUP] + [r'$\infty$']
+    lines = [edges[mean] for mean, _, _ in SPEEDUP] + [suf]
+    at = [(x, np.interp(x, grid, line)) for x, line in zip(LABEL_AT, lines)]
+    axb.clabel(contours, levels, inline=True, inline_spacing=2, fontsize=.8 * (s.FS - .5), colors=INK, manual=at,
+               fmt=dict(zip(contours.levels, texts)))
 
-    # one legend for both panels in two rows; its columns fill top-down: the deadlines, the left panel's
-    # marks, then the right panel (distributions and U_0)
-    handles = [Patch(facecolor=s.tint(color, .35), edgecolor=color, lw=.7, label=f'$d={d}$')
-               for d, color in DEADLINE_COLOR.items()]
-    handles += [Line2D([], [], color=INK, marker='x', ms=3.2, mew=.6, ls='none', label='simulated'),
-                Line2D([], [], label=r'$\varepsilon_i=1\%$', **s.TARGET_STYLE)]
-    handles += [Line2D([], [], color=INK, lw=.8, marker=MARK[p], ms=GAP_MS, mfc=INK, mec='white', mew=.25,
-                       label=NAME[p]) for p in dists]
-    handles.append(Line2D([], [], color=INK, lw=.8, label=r'$U_0$'))
-    s.framed_legend(fig, handles, 4, columnspacing=1.0, handlelength=1.6)
-    s.save(fig, out, 'fig4_bracket')
+    # the legend fills its three columns top to bottom: verdicts in the first row, edge styles in the second
+    handles = [Patch(facecolor=FILL['infeasible'], edgecolor=INK, lw=.5, label='certified infeasible'),
+               Line2D([], [], label='deterministic', **EDGE),
+               Patch(facecolor=FILL['undetermined'], edgecolor=INK, lw=.5, label='undetermined'),
+               Line2D([], [], ls=DASH, label='Pareto', **EDGE),
+               Patch(facecolor=FILL['feasible'], edgecolor=INK, lw=.5, label='certified feasible')]
+    s.framed_legend(fig, handles, 3, columnspacing=1.0, handlelength=1.6)
+    s.save(fig, out, 'fig_verdicts')
 
 
-# scheduler requirements
+# ---- Fig. 2 ----
+
+COLOR = {'det': '#2E5C8A', 'exp': '#9E2A2B', 'pareto': '#C9A227'}
+MEANS = ['1/2', '5', '50', '500']
+SHOWN = ['1/4', '1/2', '3/4']
+MS = 3.6
+
+
+def series(table, law, frac, rho='9/10'):
+    """The rows of one (law, d/I) at load `rho`, ordered by the mean reconfiguration time."""
+    found = {r['mean']: r for r in table if r['law'] == law and r['rho'] == rho and r['d_over_i'] == frac}
+    return [float(Fraction(m)) for m in MEANS], [found[m] for m in MEANS]
+
+
+def marked(law):
+    """Line and marker style of one distribution: filled circles with a thin white edge (the color
+    tells the distributions apart)."""
+    return dict(color=COLOR[law], lw=.9, marker='o', ms=MS, mfc=COLOR[law], mec='white', mew=.25)
+
+
+def log_axes(ax, label):
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_xlim(.36, 700)
+    ax.set_ylim(.6, 50)
+    ax.set_xticks([.5, 5, 50, 500], ['0.5', '5', '50', '500'])
+    ax.set_yticks([1, 3, 10, 30], ['1', '3', '10', '30'])
+    s.no_minor(ax)
+    ax.set_xlabel(r'$\bar\tau$ [s]')
+    ax.text(.5, .97, label, transform=ax.transAxes, ha='center', va='top', color=INK)
+
 
 @s.large_text
-def fig5_scheduling(res, out):
-    """Left (N = 2, exponential reconfiguration, rho = 0.05, d = 3): the certified range of the total
-    reconfiguration rate versus the common target (band; dots at its endpoints), the excluded targets below
-    L_safe (gray), the exact miss probability of OJF (dashed), and the counterexample: the rates of OJF
-    (square) at the smallest target whose relaxation admits them although OJF misses it, with a segment up
-    to the miss probability of OJF. Right: kappa_L of the directional case at rho = 0.1, h = 3/4 under
-    faster class-1 service and under shorter reconfiguration times, for both reconfiguration directions
-    (gray: kappa_L above 1, the targets are certified infeasible)."""
-    fig = s.figure(COLW, 1.60, left=.13, right=.985, bottom=.262, top=.720, wspace=.40)
-    axa, axb = fig.subplots(1, 2, width_ratios=[.70, 1.30])  # the right panel needs the width for its decimal ticks
-    gray = '#e3e3e3'
+def fig_gap(tables, out):
+    table = rows(tables, 'gap.csv')
+    fig = s.figure(s.COLW, 1.15, left=.115, right=.985, bottom=.30, top=.765, wspace=.10)
+    axa, axb = fig.subplots(1, 2, sharey=True)
 
-    # left: the operating region in the (rate, target) plane
-    region = res.region()
-    cex = data.counterexample(res.sweep_rows())
-    s.tidy(axa)
-    axa.set_xscale('log')
-    axa.set_yscale('log')
-    rows = [r for r in region['region'] if not r['excluded']]
-    eps = np.array([100 * r['eps_f64'] for r in rows])
-    nu_lo = np.array([r['nu_lo'] for r in rows])
-    nu_hi = np.array([r['nu_hi'] for r in rows])
-    ymin = .15
-    l_safe = 100 * region['bracket']['l_safe']['f64']
-    u_plus = 100 * region['bracket']['u_plus']['f64']
-    axa.axhspan(ymin, l_safe, color=gray, lw=0, zorder=0)
-    axa.fill_betweenx(eps, nu_lo, nu_hi, color=s.tint(BLUE, .35), lw=0, zorder=1)
-    axa.plot(nu_lo, eps, color=BLUE, lw=.8, zorder=3)
-    axa.plot(nu_hi, eps, color=BLUE, lw=.8, zorder=3)
-    axa.plot(np.r_[nu_lo, nu_hi], np.r_[eps, eps], ls='none', marker='o', ms=1.4, mew=0, color=BLUE, zorder=4)
-    axa.axhline(u_plus, color=INK, lw=.7, ls=(0, (3, 1.3)), zorder=2)
-    nu_ojf = cex['reference_rates']['nu_total']['f64']
-    eps_cex = 100 * cex['eps_f64']
-    axa.plot([nu_ojf, nu_ojf], [eps_cex, u_plus], color=RED, lw=.8, zorder=5)
-    axa.plot([nu_ojf], [eps_cex], marker='s', ms=3.4, mfc='white', mec=INK, mew=.8, ls='none', zorder=6)
-    axa.set_xlim(8e-3, 3.0)
-    axa.set_ylim(ymin, 20)
-    axa.set_xticks([.01, .1, 1], ['0.01', '0.1', '1'])
-    axa.set_yticks([.2, 1, 10], ['0.2', '1', '10'])
-    s.no_minor(axa)
-    axa.set_xlabel(r'$\nu$')
-    axa.set_ylabel(r'$\varepsilon$ [%]')
+    # left: deterministic reconfiguration, thresholds below the mean time away
+    x, _ = series(table, 'det', '1/2')
+    widths = {f: [float(r['width']) for r in series(table, 'det', f)[1]] for f in SHOWN}
+    lo = [min(widths[f][i] for f in SHOWN) for i in range(len(x))]
+    hi = [max(widths[f][i] for f in SHOWN) for i in range(len(x))]
+    axa.fill_between(x, lo, hi, color=s.tint(COLOR['det'], .45), lw=0, zorder=2)
+    axa.plot(x, widths['1/2'], zorder=3, **marked('det'))
+    log_axes(axa, r'$I/4\leq d\leq3I/4$')
+    axa.set_ylabel('Gap [pp]')
 
-    # right: kappa_L of the base design (factor 1) under two separate families of changes, each given as
-    # (variants in order, x positions, tick labels, group title)
-    s.tidy(axb)
-    axb.set_yscale('log')
-    dj = res.directional()
-    iv = {(r['orientation'], r['variant']): r for r in dj['interventions']}
-    groups = [(['base', 'service_class1_x5/4', 'service_class1_x3/2', 'service_class1_x2'], [0, 1, 2, 3],
-               ['1', '1.25', '1.5', '2'], r'$\mu_1\times$'),
-              (['base', 'reconfiguration_x4/5', 'reconfiguration_x3/5', 'reconfiguration_x2/5'], [3.9, 4.9, 5.9, 6.9],
-               ['1', '0.8', '0.6', '0.4'], r'$\tau\times$')]
-    looks = {'matrix': dict(color=BLUE, mfc=BLUE, ls='-'), 'transpose': dict(color=RED, mfc='white', ls=(0, (3, 1.2)))}
-    axb.axhspan(1.0, 100, color=gray, lw=0, zorder=0)
-    for variants, xs, _, _ in groups:
-        for orientation, look in looks.items():
-            y = [iv[(orientation, v)]['kappa_lower'] for v in variants]
-            axb.plot(xs, y, color=look['color'], lw=.8, ls=look['ls'], zorder=2)
-            axb.plot(xs, y, marker='o', ms=3.0, mfc=look['mfc'], mec=look['color'], mew=.8, ls='none', zorder=5)
-    axb.axvline(3.45, color='#bbbbbb', lw=.5, zorder=0)
-    s.target_line(axb)
-    axb.set_xlim(-.35, 7.3)
-    axb.set_ylim(.1, 3)
-    axb.set_xticks(groups[0][1] + groups[1][1], groups[0][2] + groups[1][2])  # decimal factors
-    trans = axb.get_xaxis_transform()
-    for _, xs, _, title in groups:  # the group titles act as axis labels
-        axb.text((xs[0] + xs[-1]) / 2, -.26, title, transform=trans, ha='center', va='top',
-                 fontsize=s.LARGE['axes.labelsize'])
-    axb.set_yticks([.1, .3, 1, 3], ['0.1', '0.3', '1', '3'])
-    s.no_minor(axb)
-    axb.set_ylabel(r'$\kappa_L$')
+    # right: threshold equal to the mean time away, three distributions
+    for law in ('det', 'exp', 'pareto'):
+        xs, rows_b = series(table, law, '1')
+        axb.plot(xs, [float(r['width']) for r in rows_b], zorder=3, **marked(law))
+    log_axes(axb, r'$d=I$')
+    axb.tick_params(axis='y', left=False)
 
-    # one legend for both panels; its columns fill top-down: the shaded regions, the two OJF entries, the
-    # two directions
-    handles = [Patch(facecolor=s.tint(BLUE, .35), edgecolor=BLUE, lw=.7, label=r'$[\nu_{\min},\nu_{\max}]$'),
-               Patch(facecolor=gray, edgecolor='#9a9a9a', lw=.5, label='excluded'),
-               Line2D([], [], color=INK, lw=.7, ls=(0, (3, 1.3)), label=r'$\widetilde m$ of OJF'),
-               Line2D([], [], color=INK, marker='s', ms=3.4, mfc='white', mew=.8, ls='none', label='OJF rates'),
-               Line2D([], [], color=BLUE, marker='o', ms=3.0, mew=.8, lw=.8,
-                      label=r'$\mathbb{E}[\tau_{12}]<\mathbb{E}[\tau_{21}]$'),
-               Line2D([], [], color=RED, marker='o', ms=3.0, mfc='white', mew=.8, lw=.8, ls=(0, (3, 1.2)),
-                      label=r'$\mathbb{E}[\tau_{12}]>\mathbb{E}[\tau_{21}]$')]
-    s.framed_legend(fig, handles, 3, fontsize=s.LARGE['axes.labelsize'], columnspacing=1.0, handlelength=1.6)
-    s.save(fig, out, 'fig5_scheduling')
+    handles = [Line2D([], [], label=s.NAME[law], **marked(law)) for law in ('det', 'exp', 'pareto')]
+    s.framed_legend(fig, handles, 3, columnspacing=1.0, handlelength=1.6)
+    s.save(fig, out, 'fig_gap')
 
 
-FIGURES = (fig3_where, fig4_bracket, fig5_scheduling)
+# ---- Fig. 3 ----
+
+DOT = (0, (1, 1.3))
+N0, N1 = 2, 16
+PANELS = ((.5, 24, [0, 10, 20]), (.9, 120, [0, 50, 100]))  # load, top [s], ticks
+
+
+def class_edge(table, rho, side, status='bracketed'):
+    """Rows of one edge with the given status, sorted by N: bracketed crossings (N, d_cross), wide
+    brackets (N, d_lo, d_hi), or edges above the computed range (N, largest computed d)."""
+    out = []
+    for r in table:
+        if abs(float(r['rho']) - rho) > 1e-9 or r['side'] != side or r['status'] != status:
+            continue
+        if status == 'bracketed':
+            out.append((int(r['n']), float(r['d_cross'])))
+        elif status == 'wide':
+            out.append((int(r['n']), float(r['d_lo']), float(r['d_hi'])))
+        else:
+            out.append((int(r['n']), float(r['d_lo'])))
+    return sorted(out)
+
+
+@s.large_text
+def fig_nclasses(tables, out):
+    table = rows(tables, 'classes.csv')
+    closed = rows(tables, 'classes_closed.csv')
+    fig = s.figure(s.COLW, 1.35, left=.115, right=.965, bottom=.235, top=.69, wspace=.30)
+    axes = fig.subplots(1, 2)
+    for ax, (rho, top, ticks) in zip(axes, PANELS):
+        bound, witness = class_edge(table, rho, 'bound'), class_edge(table, rho, 'witness')
+        bx, by = np.array([p[0] for p in bound], float), np.array([p[1] for p in bound])
+        wx, wy = np.array([p[0] for p in witness], float), np.array([p[1] for p in witness])
+        ax.set_facecolor(FILL['undetermined'])
+        ax.fill_between(bx, 0, by, color=FILL['infeasible'], lw=0, zorder=0)
+        ax.fill_between(wx, wy, top, color=FILL['feasible'], lw=0, zorder=0)
+        ax.plot(bx, by, color=INK, lw=.7, marker='o', ms=2.0, zorder=3, clip_on=False)
+        ax.plot(wx, wy, color=INK, lw=.7, marker='o', ms=2.0, zorder=3, clip_on=False)
+        for n_w, lo_w, hi_w in class_edge(table, rho, 'bound', 'wide'):
+            ax.errorbar([n_w], [(lo_w + hi_w) / 2], yerr=[[(hi_w - lo_w) / 2]], fmt='none', ecolor=INK,
+                        elinewidth=.7, capsize=1.5, capthick=.6, zorder=4, clip_on=False)
+        for n_a, d_a in class_edge(table, rho, 'witness', 'above'):
+            ax.plot([n_a], [d_a], ls='none', marker='^', ms=3.0, mfc='white', mec=INK, mew=.6, zorder=4,
+                    clip_on=False)
+        n = np.array([float(r['n']) for r in closed if abs(float(r['rho']) - rho) < 1e-9])
+        away = np.array([float(r['I']) for r in closed if abs(float(r['rho']) - rho) < 1e-9])
+        ax.plot(n, away, color=INK, lw=.7, ls=DOT, zorder=2)
+        ax.set_xlim(N0, N1)
+        ax.set_ylim(0, top)
+        ax.set_xticks([2, 4, 8, 12, 16], ['2', '4', '8', '12', '16'])
+        ax.set_yticks(ticks, [f'{t:g}' for t in ticks])
+        s.no_minor(ax)
+        for side in ('top', 'right'):
+            ax.spines[side].set_visible(False)
+        ax.set_xlabel(r'$N$')
+        ax.text(.5, .97, rf'$\rho={rho:g}$', transform=ax.transAxes, ha='center', va='top', color=INK, zorder=6)
+    axes[0].set_ylabel(r'$d$ [s]')
+    handles = [Patch(facecolor=FILL['infeasible'], edgecolor=INK, lw=.5, label='certified infeasible'),
+               Patch(facecolor=FILL['undetermined'], edgecolor=INK, lw=.5, label='undetermined'),
+               Patch(facecolor=FILL['feasible'], edgecolor=INK, lw=.5, label='certified feasible'),
+               Line2D([], [], color=INK, lw=.7, ls=DOT, label=r'mean time away $I$')]
+    s.framed_legend(fig, handles, 2, columnspacing=1.0, handlelength=1.6)
+    s.save(fig, out, 'fig_nclasses')
+
+
+if __name__ == '__main__':
+    root = Path(__file__).resolve().parent.parent
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--tables', type=Path, default=root / 'results' / 'tables')
+    parser.add_argument('--out', type=Path, default=root / 'figures')
+    args = parser.parse_args()
+    args.out.mkdir(parents=True, exist_ok=True)
+    for draw in (fig_verdicts, fig_gap, fig_nclasses):
+        draw(args.tables, args.out)

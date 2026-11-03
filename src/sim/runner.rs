@@ -40,7 +40,7 @@ pub fn run_job(job: &Value) -> Value {
             .flat_map(|i| (0..n).filter(move |j| *j != i).map(move |j| (i, j)))
             .map(|e| (e, system.switch[&e].clone()))
             .collect();
-        let mut policy = make_policy(name, params, &laws)?;
+        let mut policy = make_policy(name, params, &laws, &system.deadlines)?;
         Ok(simulate(&system, policy.as_mut()))
     })();
     let mut result = match outcome {

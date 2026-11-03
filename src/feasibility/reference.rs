@@ -623,17 +623,21 @@ impl Homogeneous {
             }
             width = width.max(f_hi[n] - f_lo[n]);
         }
-        // Lower cell masses of Y, computed directly (differences of the distribution-function
-        // enclosures would lose the enclosure width at every cell). For the cell (a, b] =
-        // ((n-1)g, ng], P(Y in (a, b]) = (1/N)(e^{-mu a} - e^{-mu b}) + q P(tau + S in (a, b]);
-        // a duration t in ((m-1)g, mg] with m < n gives P(S in (a - t, b - t]) >=
-        // e^{-mu(n-m)g}(1 - e^{-mu g}), and the cell m = n is bounded below by zero.
+        // Lower masses of Ybar >= Y, which rounds the reconfiguration time and the service time
+        // up to the grid separately: Ybar = ceil(S/g) g with probability 1/N and
+        // ceil(tau/g) g + ceil(S/g) g with probability q. Unlike lower bounds on the cell masses
+        // of Y itself, which lose about mu g of the probability (a duration that ends inside the
+        // cell where tau ends), Ybar keeps all of it, and Ybar >= Y can only lower
+        // P(Ybar + Rbar_1 + ... + Rbar_n <= d). Its mass at ng is
+        // (1/N)(e^{-mu(n-1)g} - e^{-mu n g}) + q sum_{m<n} P(tau in cell m) e^{-mu(n-m-1)g}(1 - e^{-mu g}).
+        // (Differences of the distribution-function enclosures would lose the enclosure width
+        // at every cell.)
         let one_minus_eg_lo = dn(1.0 - e_hi[1]);
         let mut h_lo = vec![0.0f64; cells + 1];
         for n in 1..=cells {
             let mut lo = 0.0f64;
             for m in 1..n {
-                lo = dn(lo + dn(p_lo[m] * dn(e_lo[n - m] * one_minus_eg_lo)));
+                lo = dn(lo + dn(p_lo[m] * dn(e_lo[n - m - 1] * one_minus_eg_lo)));
             }
             h_lo[n] = dn(dn(dn(e_lo[n - 1] - e_hi[n]) * inv_n_lo) + dn(q_lo * lo));
             if atom_lo > 0.0 {

@@ -2,7 +2,7 @@
 name = "tail-delay-feasibility"
 version = "1.0.0"
 edition = "2024"
-description = "Certified tail-delay feasibility tests and policy simulations for reconfigurable networks"
+description = "Certified tail-delay feasibility tests for reconfigurable systems"
 license = "MIT"
 readme = "README.md"
 publish = false

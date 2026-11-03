@@ -107,6 +107,6 @@ fn the_upper_end_of_a_deterministic_setting_is_pinned() {
     // g = 1/2000, a setting of the finite-load results.
     let h = homogeneous("det", 2, "1/10", "2");
     let w = enclosure(&h, "1/2000");
-    assert_eq!(to_f64(&w.u_k_plus).to_string(), "0.010690506475432904");
+    assert_eq!(to_f64(&w.u_k_plus).to_string(), "0.009706827555463593");
     assert!(w.u_k_minus <= w.u_k_plus);
 }

@@ -1,6 +1,6 @@
 //! Tests of the simulation engine: a single loaded class against the M/M/1 mean sojourn time
-//! `1 / (mu - lambda)`, conservation of jobs and time in the run record under EC, HOL-BMW and
-//! OJF, and the rejection of invalid run specifications (`job` in identifiers) as aborted runs.
+//! `1 / (mu - lambda)`, conservation of jobs and time in the run record under EC and OJF, and
+//! the rejection of invalid run specifications (`job` in identifiers) as aborted runs.
 
 use serde_json::{Value, json};
 use tdf::sim::runner::run_job;
@@ -15,7 +15,7 @@ fn system(lambda: [f64; 2]) -> Value {
 fn single_loaded_class_is_an_m_m_1_queue_and_never_reconfigures() {
     let mut means = Vec::new();
     for seed in 1..=3u64 {
-        let job = json!({"system": system([2.0, 0.0]), "policy": {"name": "ec", "params": {}}, "seed": seed});
+        let job = json!({"system": system([2.0, 0.0]), "policy": {"name": "ojf", "params": {}}, "seed": seed});
         let result = run_job(&job);
         assert_eq!(result["status"], "completed", "{}", result["abort_reason"]);
         assert_eq!(result["conservation"]["arrival_balance"], 0);
@@ -35,7 +35,6 @@ fn single_loaded_class_is_an_m_m_1_queue_and_never_reconfigures() {
 fn every_policy_conserves_jobs_and_time() {
     for policy in [
         json!({"name": "ec", "params": {}}),
-        json!({"name": "hol_bmw", "params": {"alpha": 0.1}}),
         json!({"name": "ojf", "params": {}}),
     ] {
         // Total arrival rate 0.5: stable even if every job needs a reconfiguration of length 1.
@@ -75,7 +74,6 @@ fn invalid_jobs_are_reported_as_aborted_runs() {
             .contains("unknown policy")
     );
     assert!(aborted(json!({"system": system([1.0, 1.0]), "policy": {"name": "ec", "params": {"k": 2}}, "seed": 1})).contains("unknown parameters"));
-    assert!(aborted(json!({"system": system([1.0, 1.0]), "policy": {"name": "hol_bmw", "params": {"alpha": 1.5}}, "seed": 1})).contains("alpha"));
     let mut bad = system([1.0, 1.0]);
     bad["initial"] = json!([[], []]);
     assert!(

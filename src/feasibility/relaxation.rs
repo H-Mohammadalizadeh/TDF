@@ -6,6 +6,7 @@
 //! [`build`] lists the variables and the constraint groups.
 
 use super::coefficients::PhaseCoefficients;
+use super::gaps::GapRow;
 use super::model::DiscreteModel;
 use super::rational::{Q, exp_neg};
 use super::simplex::{Lp, Sense};
@@ -51,7 +52,25 @@ impl Level {
 
     /// Constraint groups of the level.
     pub fn groups(&self) -> Vec<&'static str> {
+        self.groups_with(false)
+    }
+
+    /// Constraint groups of the level; with `gap_rows`, the full test also
+    /// carries the visit-gap groups `gap_window` and `gap` (`gaps.rs`).
+    pub fn groups_with(&self, gap_rows: bool) -> Vec<&'static str> {
         match self {
+            Level::Full if gap_rows => vec![
+                "bounds",
+                "service_only",
+                "mm1",
+                "time",
+                "flow",
+                "window",
+                "phase",
+                "gap_window",
+                "gap",
+                "target",
+            ],
             Level::Full => vec![
                 "bounds",
                 "service_only",
@@ -96,12 +115,6 @@ pub enum Objective {
     /// `min sum lambda_i x_i / sum lambda_i` (the arrival-weighted miss
     /// probability), targets dropped.
     MinArrivalWeighted,
-    /// `min x_i` for one class (its certified miss-probability bound), targets dropped.
-    MinClass(usize),
-    /// `min t` with `x_i <= t eps_i` (`kappa_L`, the smallest common scaling
-    /// of the targets that the relaxation admits; a certified value above one
-    /// excludes the targets jointly), targets dropped.
-    MinScale,
     /// The total reconfiguration rate `sum_{u != v} nu_uv`, minimized or (with
     /// `maximize`, through the negated objective) maximized over the region
     /// with every target row retained: a necessary operating range.
@@ -111,11 +124,13 @@ pub enum Objective {
     EntryRate { class: usize, maximize: bool },
 }
 
-/// Everything the relaxation needs for one model.
+/// Everything the relaxation needs for one model. `gaps` is `None` unless the
+/// visit-gap constraints are requested; the full test then carries them.
 pub struct Ingredients<'a> {
     pub model: &'a DiscreteModel,
     pub coef: &'a PhaseCoefficients,
     pub windows: &'a [WindowRow],
+    pub gaps: Option<&'a [GapRow]>,
 }
 
 /// The LP of one level and objective, with the column indices of `nu_uv`
@@ -130,8 +145,8 @@ pub struct Relaxation {
 /// Build the relaxation at one level for one objective. Variables: the
 /// reconfiguration rate `nu_uv >= 0` of every ordered pair, the idle
 /// fraction `z_j >= 0` of every configuration, a candidate miss probability
-/// `x_i` of every class (`x_i <= 1` for active classes) and, for `MinMax` and
-/// `MinScale`, `t >= 0`. Constraint groups:
+/// `x_i` of every class (`x_i <= 1` for active classes) and, for `MinMax`,
+/// `t >= 0`. Constraint groups:
 ///
 /// * `service_only`: `x_i >= exp(-mu_i d_i)` (a job misses when its own
 ///   service exceeds the deadline);
@@ -144,15 +159,22 @@ pub struct Relaxation {
 /// * `window`: the minimum reconfiguration rate (`windows.rs`);
 /// * `phase`: the misses caused by service, idling and reconfiguration,
 ///   `x_k >= sum_j rho_j A_jk + sum_j z_j B_jk + sum_{u != v} nu_uv C_uv,k`;
+/// * `gap_window`, `gap`: the visit-gap constraints of `ing.gaps`
+///   (`gaps.rs`), in the full test only when they are given;
 /// * `target`: `x_i <= eps_i`, kept for the feasibility and rate objectives.
 ///
 /// Per-class rows exist only for active classes. With coefficients in the
 /// certificate direction, every approximated constant weakens its row, so
 /// the relaxation contains the exact region.
 pub fn build(ing: &Ingredients, level: Level, objective: Objective) -> Relaxation {
+    build_groups(ing, &level.groups_with(ing.gaps.is_some()), objective)
+}
+
+/// The relaxation with the constraint groups `groups` (any of those of
+/// [`build`]) for one objective.
+pub fn build_groups(ing: &Ingredients, groups: &[&str], objective: Objective) -> Relaxation {
     let model = ing.model;
     let n = model.n;
-    let groups = level.groups();
     let has = |g: &str| groups.contains(&g);
     let mut lp = Lp::default();
     let mut nu = vec![vec![None; n]; n];
@@ -161,7 +183,7 @@ pub fn build(ing: &Ingredients, level: Level, objective: Objective) -> Relaxatio
     }
     let z: Vec<usize> = (0..n).map(|j| lp.var(&format!("z_{j}"))).collect();
     let x: Vec<usize> = (0..n).map(|i| lp.var(&format!("x_{i}"))).collect();
-    let t = matches!(objective, Objective::MinMax | Objective::MinScale).then(|| lp.var("t"));
+    let t = matches!(objective, Objective::MinMax).then(|| lp.var("t"));
     let active: Vec<usize> = (0..n).filter(|i| model.active(*i)).collect();
     for &i in &active {
         lp.row(
@@ -276,6 +298,17 @@ pub fn build(ing: &Ingredients, level: Level, objective: Objective) -> Relaxatio
             );
         }
     }
+    for g in ing.gaps.unwrap_or_default() {
+        if !has(g.group) {
+            continue;
+        }
+        let i = g.class;
+        let mut coef = vec![(x[i], g.x.clone()), (z[i], g.z.clone())];
+        for u in (0..n).filter(|u| *u != i) {
+            coef.push((nu[u][i].unwrap(), g.entry[u].clone()));
+        }
+        lp.row(coef, Sense::Ge, g.rhs.clone(), g.label.clone());
+    }
     // The target rows stay in the feasibility test and in the rate objectives
     // (operating ranges of a policy that meets every target); the
     // performance bounds drop them.
@@ -313,21 +346,6 @@ pub fn build(ing: &Ingredients, level: Level, objective: Objective) -> Relaxatio
                 .iter()
                 .map(|&i| (x[i], &model.lam[i] / &total))
                 .collect();
-        }
-        Objective::MinClass(i) => {
-            lp.objective = vec![(x[i], Q::one())];
-        }
-        Objective::MinScale => {
-            let t = t.unwrap();
-            for &i in &active {
-                lp.row(
-                    vec![(t, model.eps[i].clone()), (x[i], -Q::one())],
-                    Sense::Ge,
-                    Q::zero(),
-                    format!("eps_{i} t >= x_{i}"),
-                );
-            }
-            lp.objective = vec![(t, Q::one())];
         }
         Objective::TotalRate { maximize } => {
             let s = if maximize { -Q::one() } else { Q::one() };

@@ -1,15 +1,13 @@
 //! Helpers shared by the commands: output files, run manifests with the
 //! digests of the sources, grid settings from the command-line overrides,
 //! the named distributions (profiles), setting identifiers and the JSON
-//! summaries of constraint levels, certificates and rate ranges.
+//! summaries of constraint levels and certificates.
 
 use crate::feasibility::LevelResult;
-use crate::feasibility::RateInterval;
-use crate::feasibility::distributions::{Distribution, pareto_with_alpha, profile};
+use crate::feasibility::distributions::{Distribution, profile};
 use crate::feasibility::grid::GridSettings;
 use crate::feasibility::rational::{Q, parse_q, to_f64};
 use crate::feasibility::simplex::Certified;
-use num_traits::Signed;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
@@ -55,6 +53,7 @@ const SOURCES: [&str; 32] = [
     "src/feasibility/mod.rs",
     "src/feasibility/coefficients.rs",
     "src/feasibility/distributions.rs",
+    "src/feasibility/gaps.rs",
     "src/feasibility/grid.rs",
     "src/feasibility/model.rs",
     "src/feasibility/rational.rs",
@@ -71,16 +70,15 @@ const SOURCES: [&str; 32] = [
     "src/sim/runner.rs",
     "src/experiments/mod.rs",
     "src/experiments/common.rs",
-    "src/experiments/point.rs",
     "src/experiments/map.rs",
-    "src/experiments/distributions.rs",
-    "src/experiments/validate.rs",
     "src/experiments/screen.rs",
     "src/experiments/bracket.rs",
-    "src/experiments/ojf.rs",
-    "src/experiments/sweep.rs",
-    "src/experiments/region.rs",
-    "src/experiments/directional.rs",
+    "src/experiments/witness.rs",
+    "src/experiments/verdicts.rs",
+    "src/witness/mod.rs",
+    "src/witness/bound.rs",
+    "src/witness/fp.rs",
+    "src/witness/laws.rs",
 ];
 
 /// Digests of the sources, read from the crate directory recorded at build
@@ -134,13 +132,9 @@ pub fn grid_settings(
     Ok(s)
 }
 
-/// A named distribution with the given mean and squared coefficient of
-/// variation: one of the six profiles, or `pareto_heavy`, the Pareto
-/// distribution of shape 3/2 (infinite variance) with the given mean.
+/// A named distribution (one of the six profiles) with the given mean and squared coefficient
+/// of variation.
 pub fn profile_law(name: &str, mean: &Q, cv2: &Q) -> Result<Distribution, String> {
-    if name == "pareto_heavy" {
-        return Ok(pareto_with_alpha(mean, &parse_q("3/2")?));
-    }
     profile(name, mean, cv2)
 }
 
@@ -166,6 +160,10 @@ pub fn witness_families(c: &Certified) -> Vec<String> {
                     let l = label.as_str();
                     if l.starts_with("phase[") {
                         "phase"
+                    } else if l.starts_with("gap_window[") {
+                        "gap_window"
+                    } else if l.starts_with("gap_weak[") || l.starts_with("gap_strong[") {
+                        "gap"
                     } else if l.starts_with("window[") {
                         "window"
                     } else if l.starts_with("time_accounting") {
@@ -207,32 +205,6 @@ pub fn opt_f(x: &Option<Q>) -> String {
     x.as_ref()
         .map(|v| to_f64(v).to_string())
         .unwrap_or_default()
-}
-
-/// A rate range with an optional reference rate it should contain and, for
-/// an entry rate with the class's arrival rate `lam`, the implied range of
-/// the average number of jobs served per visit.
-pub fn interval_json(iv: &RateInterval, reference: Option<&Q>, lam: Option<&Q>) -> Value {
-    let lo = iv.lo();
-    let hi = iv.hi();
-    let contains = match (&lo, &hi, reference) {
-        (Some(l), Some(h), Some(r)) => Some(l <= r && r <= h),
-        _ => None,
-    };
-    // Average jobs per visit from `lambda_i = eta_i beta_i`, from positive endpoints only.
-    let batch = match (lam, &lo, &hi) {
-        (Some(l), Some(elo), Some(ehi)) => json!({
-            "beta_lo": (ehi.is_positive()).then(|| to_f64(&(l / ehi))),
-            "beta_hi": (elo.is_positive()).then(|| to_f64(&(l / elo))),
-            "note": "beta_i = lambda_i / eta_i is the long-run average number of jobs served per visit; a zero lower endpoint leaves beta_i unbounded above"
-        }),
-        _ => Value::Null,
-    };
-    let mut v = iv.to_json();
-    v["reference"] = reference.map(|r| json!(to_f64(r))).unwrap_or(Value::Null);
-    v["contains_reference"] = json!(contains);
-    v["average_jobs_per_visit"] = batch;
-    v
 }
 
 #[cfg(test)]

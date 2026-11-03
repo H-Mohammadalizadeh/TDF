@@ -3,7 +3,7 @@
 //! exactly verified Farkas witness, the single-class bound against the exact M/M/1 miss
 //! probability `exp(-(mu - lambda) d)`, monotonicity of the bounds over the four constraint
 //! levels, relaxed targets, routes through intermediate configurations, inactive classes,
-//! heterogeneous classes, and simulated EC and HOL-BMW runs against the necessary conditions,
+//! heterogeneous classes, and simulated EC and OJF runs against the necessary conditions,
 //! including the pathwise coupling with a dedicated M/M/1 queue per class.
 
 use serde_json::json;
@@ -23,6 +23,7 @@ fn opts(step: &str) -> Options {
         all_subsets: false,
         step: parse_q(step).unwrap(),
         bits: 128,
+        gap_rows: false,
     }
 }
 
@@ -124,6 +125,7 @@ fn the_two_class_example_is_certified_infeasible_with_a_verified_witness() {
         model: &m,
         coef: &coef,
         windows: &windows,
+        gaps: None,
     };
     let r = build(&ing, Level::Full, Objective::Feasibility);
     let w: Vec<Q> =
@@ -292,6 +294,7 @@ fn the_minimum_worst_class_bound_agrees_with_the_feasibility_verdict() {
         model: &m,
         coef: &coef,
         windows: &windows,
+        gaps: None,
     };
     let f = certify_feasibility(&build(&ing, Level::Full, Objective::Feasibility).lp);
     let mm = certify_minimum(&build(&ing, Level::Full, Objective::MinMax).lp);
@@ -377,7 +380,7 @@ fn the_dedicated_queue_coupling_holds_pathwise_and_gives_the_baseline_level() {
     let model = Model::from_discrete(&m);
     for (policy, seed) in [
         (json!({"name": "ec", "params": {}}), 41u64),
-        (json!({"name": "hol_bmw", "params": {"alpha": 0.1}}), 43),
+        (json!({"name": "ojf", "params": {}}), 43),
     ] {
         let system = model.system_json(2000.0, 2000.0, 100.0, true);
         let r = run_job(&json!({"system": system, "policy": policy, "seed": seed}));

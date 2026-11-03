@@ -27,8 +27,7 @@ pub struct Args {
     /// Output directory.
     #[arg(long)]
     pub out: PathBuf,
-    /// Reconfiguration-time profiles (det, exp, gamma, tnorm, lognormal,
-    /// pareto, pareto_heavy).
+    /// Reconfiguration-time profiles (det, exp, gamma, tnorm, lognormal, pareto).
     #[arg(long, value_delimiter = ',', default_value = "exp")]
     pub profiles: Vec<String>,
     /// Numbers of classes.

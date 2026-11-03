@@ -32,10 +32,18 @@ impl View {
 }
 
 /// A scheduling policy. `decide` returns the current configuration (serve
-/// its oldest job), another configuration with waiting jobs (reconfigure),
-/// or `-1` (idle until the next arrival).
+/// its oldest job), another configuration with waiting jobs (reconfigure;
+/// any other configuration if the policy visits empty configurations), or
+/// `-1` (idle until the next arrival).
 pub trait Policy {
     fn decide(&mut self, view: &View) -> i64;
+
+    /// Whether the policy also passes through configurations whose class is empty, as cyclic
+    /// polling does: it is then consulted when every queue is empty, and it may reconfigure
+    /// towards an empty queue. `false` by default.
+    fn visits_empty(&self) -> bool {
+        false
+    }
 }
 
 /// The simulated system: the parameters of one run.
@@ -425,7 +433,8 @@ fn mean_or_null(values: &[f64]) -> Value {
 /// reconfiguration has just ended at a nonempty queue, its head is served; otherwise the policy
 /// chooses: serve the head of the current queue, reconfigure towards a nonempty queue (the
 /// reconfiguration time is drawn from the distribution of the pair), or idle until the next
-/// arrival.
+/// arrival. A policy that visits empty configurations ([`Policy::visits_empty`]) is consulted
+/// also when every queue is empty, and it may reconfigure towards an empty queue.
 ///
 /// Every job that arrives in the observation window `[warmup, warmup + measure)` belongs to the
 /// cohort. The run continues for a follow-up period so that the deadline outcomes of the cohort
@@ -669,6 +678,7 @@ pub fn simulate(sys: &System, policy: &mut dyn Policy) -> Value {
 
     push_event!(0.0_f64, 3, 3, 0, 0.0, 0);
     let mut policy_error: Option<String> = None;
+    let visits_empty = policy.visits_empty();
     while let Some(top) = events.peek() {
         let events_exhausted = sys.max_events.is_some_and(|m| event_count >= m);
         let jobs_exhausted = sys
@@ -769,7 +779,7 @@ pub fn simulate(sys: &System, policy: &mut dyn Policy) -> Value {
         if switched && !queues[at].is_empty() {
             start_service!();
         } else if must_decide && now < limit {
-            if queues.iter().all(|q| q.is_empty()) {
+            if !visits_empty && queues.iter().all(|q| q.is_empty()) {
                 phase = 2;
             } else {
                 let tick = Instant::now();
@@ -779,7 +789,11 @@ pub fn simulate(sys: &System, policy: &mut dyn Policy) -> Value {
                     policy_error = Some(format!("invalid policy action {action}"));
                     break;
                 }
-                if action >= 0 && action as usize != at && queues[action as usize].is_empty() {
+                if !visits_empty
+                    && action >= 0
+                    && action as usize != at
+                    && queues[action as usize].is_empty()
+                {
                     policy_error = Some("switch destination must be nonempty".into());
                     break;
                 }

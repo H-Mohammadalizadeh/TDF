@@ -1,10 +1,14 @@
-//! `tdf map`: the evaluation grid of symmetric settings (profiles x numbers of classes x loads x
-//! deadlines x targets), each certified at the four constraint levels. For the fixed service
-//! rate, the phase coefficients depend only on the profile, the number of classes and the
-//! deadline, so the settings are processed in groups of these three, in parallel over the
-//! groups; with `--cache`, a group's coefficients are computed once and read back for its other
-//! loads and targets. Every setting's certificate goes to `certificates/`, the table to `map.csv`
-//! and `map.json`, the counts to `summary.json`.
+//! `tdf map`: the evaluation grid of symmetric settings (profiles x mean reconfiguration times x
+//! numbers of classes x loads x deadlines x targets), each certified at the four constraint
+//! levels. For the fixed service rate, the phase coefficients depend only on the profile, the
+//! mean, the number of classes and the deadline, so the settings are processed in groups of
+//! these, in parallel over the groups; with `--cache`, a group's coefficients are computed once
+//! and read back for its other loads and targets. Deadlines given as multiples of the mean
+//! intervisit time (`--d-over-i`) depend on the load, so such a group shares coefficients only
+//! across targets. Every setting's certificate goes to `certificates/`, the table to `map.csv`
+//! and `map.json`, the counts to `summary.json`. With the defaults (one mean, 1/2) the
+//! identifiers, tables and records are those of the grid without these options; the columns
+//! `mean` and `d_over_i` are added only with other means or `--d-over-i`.
 
 use super::common::{
     file_stem, grid_settings, parse_rational, point_id, profile_law, write_json, write_lines,
@@ -12,8 +16,9 @@ use super::common::{
 use crate::feasibility::Evaluation;
 use crate::feasibility::distributions::{Distribution, Model};
 use crate::feasibility::evaluate;
-use crate::feasibility::rational::{Q, to_f64};
+use crate::feasibility::rational::{Q, qi, qr, to_f64};
 use crate::feasibility::relaxation::Level;
+use num_traits::One;
 use rayon::prelude::*;
 use serde_json::{Value, json};
 use std::fs;
@@ -43,16 +48,25 @@ pub struct Args {
     /// Deadlines in seconds.
     #[arg(long, value_delimiter = ',', default_value = "1,2,3,4,6,8,12", value_parser = parse_rational)]
     pub ds: Vec<Q>,
+    /// Deadlines as multiples of `I = (1 - rho/N) N taubar / (1 - rho)`, the mean time between
+    /// visits to a configuration under cyclic exhaustive service at mean reconfiguration time
+    /// `taubar`, each rounded to the nearest multiple of the grid step, in place of `--ds` (for
+    /// example 0.5,0.75,0.9,1,1.25,1.5,2). The grid cells grow with the deadline, and the cost
+    /// of the coefficients with their square.
+    #[arg(long, value_delimiter = ',', value_parser = parse_rational)]
+    pub d_over_i: Vec<Q>,
     /// Target miss probabilities.
     #[arg(long, value_delimiter = ',', default_value = "1/1000,1/100,1/20", value_parser = parse_rational)]
     pub epsilons: Vec<Q>,
-    /// Mean reconfiguration time in seconds.
-    #[arg(long, default_value = "1/2", value_parser = parse_rational)]
-    pub mean: Q,
+    /// Mean reconfiguration times in seconds; the classes and the distribution shapes stay the
+    /// same, and every setting is evaluated at each mean.
+    #[arg(long = "means", alias = "mean", value_delimiter = ',', default_value = "1/2", value_parser = parse_rational)]
+    pub means: Vec<Q>,
     /// Squared coefficient of variation of the reconfiguration time.
     #[arg(long, default_value = "1/3", value_parser = parse_rational)]
     pub cv2: Q,
-    /// Grid step in seconds (default 1/2000 up to 4 classes, 1/1000 up to 8, 1/500 beyond).
+    /// Grid step in seconds (default 1/2000 up to 4 classes, 1/1000 up to 8, 1/500 beyond,
+    /// multiplied by the mean reconfiguration time over 1/2).
     #[arg(long)]
     pub step: Option<String>,
     /// Refinement sweeps of the upper bound on the completion probability (default 3).
@@ -65,6 +79,9 @@ pub struct Args {
     /// classes, every pair and, with more than three classes, every leave-one-out set).
     #[arg(long)]
     pub all_subsets: bool,
+    /// Add the visit-gap constraints (groups `gap_window` and `gap`) to the full test.
+    #[arg(long)]
+    pub gap_rows: bool,
     /// Directory of cached phase coefficients, read when present and written otherwise
     /// (default: no cache).
     #[arg(long)]
@@ -72,6 +89,38 @@ pub struct Args {
     /// Worker threads (default: all cores).
     #[arg(long)]
     pub threads: Option<usize>,
+}
+
+/// The deadline of a group of settings: in seconds, or a multiple of the mean intervisit time,
+/// which depends on the load.
+#[derive(Clone, Debug)]
+enum Deadline {
+    Seconds(Q),
+    OverI(Q),
+}
+
+/// The deadline `r I` rounded to the nearest multiple of `step` (at least one step), with
+/// `I = (1 - rho/N) N mean / (1 - rho)`.
+fn deadline_over_i(n: usize, rho: &Q, mean: &Q, r: &Q, step: &Q) -> Result<Q, String> {
+    if *rho >= Q::one() {
+        return Err(format!("--d-over-i needs a load below one, got {rho}"));
+    }
+    let nq = qi(n as i64);
+    let intervisit = (Q::one() - rho / &nq) * &nq * mean / (Q::one() - rho);
+    Ok((r * intervisit / step).round().max(Q::one()) * step)
+}
+
+/// The identifier of a setting ([`point_id`]), followed by the mean reconfiguration time when it
+/// is not 1/2 and by the multiple of `I` when the deadline is given as one.
+fn setting_id(p: &str, n: usize, rho: &Q, d: &Q, eps: &Q, mean: &Q, spec: &Deadline) -> String {
+    let mut id = point_id(p, n, rho, d, eps);
+    if *mean != qr(1, 2) {
+        id.push_str(&format!("|tau={mean}"));
+    }
+    if let Deadline::OverI(r) = spec {
+        id.push_str(&format!("|d/I={r}"));
+    }
+    id
 }
 
 /// Peak resident memory of the process in kB, where the platform reports it.
@@ -226,12 +275,21 @@ pub fn run(args: &Args) -> Result<Value, String> {
     let cache = args.cache.as_deref();
     fs::create_dir_all(out.join("certificates")).map_err(|e| e.to_string())?;
     let t0 = Instant::now();
+    // The columns `mean` and `d_over_i` appear only when the grid varies them.
+    let axis = args.means != [qr(1, 2)] || !args.d_over_i.is_empty();
+    let deadlines: Vec<Deadline> = if args.d_over_i.is_empty() {
+        args.ds.iter().cloned().map(Deadline::Seconds).collect()
+    } else {
+        args.d_over_i.iter().cloned().map(Deadline::OverI).collect()
+    };
     let mut groups = Vec::new();
     for p in &args.profiles {
-        let law = profile_law(p, &args.mean, &args.cv2)?;
-        for &n in &args.ns {
-            for d in &args.ds {
-                groups.push((p.clone(), law.clone(), n, d.clone()));
+        for mean in &args.means {
+            let law = profile_law(p, mean, &args.cv2)?;
+            for &n in &args.ns {
+                for d in &deadlines {
+                    groups.push((p.clone(), law.clone(), mean.clone(), n, d.clone()));
+                }
             }
         }
     }
@@ -244,16 +302,36 @@ pub fn run(args: &Args) -> Result<Value, String> {
     let done = AtomicUsize::new(0);
     let rows: Vec<Result<Vec<Value>, String>> = groups
         .par_iter()
-        .map(|(p, law, n, d)| {
-            let settings = grid_settings(*n, args.step.as_deref(), args.sweeps, args.bits, args.all_subsets)?;
+        .map(|(p, law, mean, n, spec)| {
+            let mut settings = grid_settings(*n, args.step.as_deref(), args.sweeps, args.bits, args.all_subsets)?;
+            if args.step.is_none() {
+                settings.step = &settings.step * mean * qi(2);
+            }
+            settings.gap_rows = args.gap_rows;
             let mut out_rows = Vec::new();
             let t1 = Instant::now();
             for rho in &args.rhos {
+                let d = match spec {
+                    Deadline::Seconds(d) => d.clone(),
+                    Deadline::OverI(r) => deadline_over_i(*n, rho, mean, r, &settings.step)?,
+                };
                 for eps in &args.epsilons {
-                    let id = point_id(p, *n, rho, d, eps);
-                    let model = Model::balanced(&id, law, *n, rho, d, eps);
+                    let id = setting_id(p, *n, rho, &d, eps, mean, spec);
+                    let model = Model::balanced(&id, law, *n, rho, &d, eps);
                     let ev = evaluate(&model, &settings, &Level::all(), cache)?;
-                    let r = row(&id, p, *n, rho, d, eps, law, &ev, settings.bits);
+                    let mut r = row(&id, p, *n, rho, &d, eps, law, &ev, settings.bits);
+                    if axis {
+                        r["mean"] = json!(mean.to_string());
+                        r["d_over_i"] = match spec {
+                            Deadline::OverI(x) => json!(x.to_string()),
+                            Deadline::Seconds(_) => Value::Null,
+                        };
+                    }
+                    if args.gap_rows {
+                        for l in &ev.evaluation.levels {
+                            r["levels"][l.level.name()]["groups"] = json!(l.groups);
+                        }
+                    }
                     let full = ev.evaluation.level(Level::Full);
                     write_json(
                         &out.join("certificates").join(format!("{}.json", file_stem(&id))),
@@ -265,7 +343,12 @@ pub fn run(args: &Args) -> Result<Value, String> {
                 }
             }
             let k = done.fetch_add(1, Ordering::SeqCst) + 1;
-            eprintln!("map: group {k}/{} {p} N={n} d={d} done in {:.1} s (elapsed {:.0} s)", groups.len(), t1.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64());
+            let d = match spec {
+                Deadline::Seconds(d) => format!("d={d}"),
+                Deadline::OverI(r) => format!("d/I={r}"),
+            };
+            let tau = if *mean != qr(1, 2) { format!(" tau={mean}") } else { String::new() };
+            eprintln!("map: group {k}/{} {p}{tau} N={n} {d} done in {:.1} s (elapsed {:.0} s)", groups.len(), t1.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64());
             Ok(out_rows)
         })
         .collect();
@@ -273,14 +356,22 @@ pub fn run(args: &Args) -> Result<Value, String> {
     for r in rows {
         all.extend(r?);
     }
-    let mut csv = vec![csv_header()];
-    csv.extend(all.iter().map(csv_line));
+    let field = |v: &Value| v.as_str().unwrap_or_default().to_string();
+    let mut csv = vec![csv_header() + if axis { ",mean,d_over_i" } else { "" }];
+    csv.extend(all.iter().map(|r| {
+        let line = csv_line(r);
+        if axis {
+            format!("{line},{},{}", field(&r["mean"]), field(&r["d_over_i"]))
+        } else {
+            line
+        }
+    }));
     write_lines(&out.join("map.csv"), &csv)?;
-    let summary = json!({
+    let mut summary = json!({
         "points": all.len(), "groups": groups.len(), "total_seconds": t0.elapsed().as_secs_f64(),
         "profiles": args.profiles, "ns": args.ns, "rhos": args.rhos.iter().map(|q| q.to_string()).collect::<Vec<_>>(),
         "ds": args.ds.iter().map(|q| q.to_string()).collect::<Vec<_>>(), "epsilons": args.epsilons.iter().map(|q| q.to_string()).collect::<Vec<_>>(),
-        "mean": args.mean.to_string(), "cv2": args.cv2.to_string(),
+        "mean": args.means[0].to_string(), "cv2": args.cv2.to_string(),
         "full_infeasible": all.iter().filter(|r| r["levels"]["full"]["category"] == "certified_infeasible").count(),
         "base_infeasible": all.iter().filter(|r| r["levels"]["base"]["category"] == "certified_infeasible").count(),
         "base_windows_infeasible": all.iter().filter(|r| r["levels"]["base_windows"]["category"] == "certified_infeasible").count(),
@@ -288,10 +379,62 @@ pub fn run(args: &Args) -> Result<Value, String> {
         "inconclusive": all.iter().filter(|r| r["levels"]["full"]["category"] == "numerically_inconclusive").count(),
         "peak_memory_kb": peak_memory_kb()
     });
+    // Recorded only when used, so that the summary of the default grid is unchanged.
+    if args.means.len() > 1 {
+        summary["means"] = json!(args.means.iter().map(|q| q.to_string()).collect::<Vec<_>>());
+        summary.as_object_mut().unwrap().remove("mean");
+    }
+    if !args.d_over_i.is_empty() {
+        summary["d_over_i"] = json!(
+            args.d_over_i
+                .iter()
+                .map(|q| q.to_string())
+                .collect::<Vec<_>>()
+        );
+        summary.as_object_mut().unwrap().remove("ds");
+    }
+    if args.gap_rows {
+        summary["gap_rows"] = json!(true);
+        summary["full_groups"] = json!(Level::Full.groups_with(true));
+    }
     write_json(
         &out.join("map.json"),
         &json!({"summary": summary, "rows": all}),
     )?;
     write_json(&out.join("summary.json"), &summary)?;
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::feasibility::rational::parse_q;
+
+    #[test]
+    fn deadlines_over_the_intervisit_time_are_rounded_to_the_step() {
+        // N = 4, rho = 7/10, mean 50: I = (1 - 7/40) 4 50 / (3/10) = 550.
+        let d = deadline_over_i(4, &qr(7, 10), &qi(50), &qr(1, 2), &qr(1, 20)).unwrap();
+        assert_eq!(d, qi(275));
+        // N = 4, rho = 9/10, mean 1/2: I = 31/2, and 3/4 I is a multiple of 1/2000.
+        let d = deadline_over_i(4, &qr(9, 10), &qr(1, 2), &qr(3, 4), &qr(1, 2000)).unwrap();
+        assert_eq!(d, parse_q("11.625").unwrap());
+        // N = 2, rho = 1/20: I = 39/38; I/3 = 0.342 rounds to 3/10, and I/100 to one step.
+        let d = deadline_over_i(2, &qr(1, 20), &qr(1, 2), &qr(1, 3), &qr(1, 10)).unwrap();
+        assert_eq!(d, qr(3, 10));
+        let d = deadline_over_i(2, &qr(1, 20), &qr(1, 2), &qr(1, 100), &qr(1, 10)).unwrap();
+        assert_eq!(d, qr(1, 10));
+        assert!(deadline_over_i(2, &qi(1), &qr(1, 2), &qi(1), &qr(1, 10)).is_err());
+    }
+
+    #[test]
+    fn identifiers_carry_the_mean_and_the_multiple_only_when_used() {
+        let (rho, eps, d) = (qr(9, 10), qr(1, 100), Deadline::Seconds(qi(4)));
+        let id = setting_id("det", 4, &rho, &qi(4), &eps, &qr(1, 2), &d);
+        assert_eq!(id, point_id("det", 4, &rho, &qi(4), &eps));
+        let id = setting_id("det", 4, &rho, &qi(4), &eps, &qi(5), &d);
+        assert_eq!(id, "det|N=4|rho=9/10|d=4|eps=1/100|tau=5");
+        let r = Deadline::OverI(qr(1, 2));
+        let id = setting_id("det", 4, &qr(7, 10), &qi(275), &eps, &qi(50), &r);
+        assert_eq!(id, "det|N=4|rho=7/10|d=275|eps=1/100|tau=50|d/I=1/2");
+    }
 }

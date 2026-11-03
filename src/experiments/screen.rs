@@ -1,4 +1,4 @@
-//! `tdf screen`: EC and HOL-BMW simulated against the certified bounds. An *environment*
+//! `tdf screen`: EC and OJF simulated against the certified bounds. An *environment*
 //! ([`Environment`]) is one profile at one `N:rho:d` setting; every policy runs there with the
 //! same seeds (paired replications), and a whole-run bootstrap gives the intervals of the pooled
 //! miss probabilities and delay tails (see [`simulate_screen`]). Output: `manifest.json`,
@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-/// Simulate EC and HOL-BMW against the certified bounds.
+/// Simulate EC or OJF against the certified bounds.
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Output directory.
@@ -48,8 +48,8 @@ pub struct Args {
         default_value = "2:1/20:2,2:7/10:3,4:1/2:4,8:7/10:6"
     )]
     pub settings: Vec<String>,
-    /// Policies to simulate: ec, hol_bmw.
-    #[arg(long, value_delimiter = ',', default_value = "ec,hol_bmw")]
+    /// Policies to simulate: ec (exhaustive cyclic polling), ojf (oldest job first).
+    #[arg(long, value_delimiter = ',', default_value = "ec")]
     pub policies: Vec<String>,
     /// Replications (runs) per profile, setting and policy, with consecutive seeds.
     #[arg(long, default_value_t = 32)]
@@ -109,14 +109,11 @@ pub struct Args {
     pub threads: Option<usize>,
 }
 
-/// The policies of the screen and their parameters (HOL-BMW with `alpha = 0.1`).
+/// The policies of the screen.
 fn known_policies() -> Vec<(String, Value)> {
     vec![
         ("ec".into(), json!({"name": "ec", "params": {}})),
-        (
-            "hol_bmw".into(),
-            json!({"name": "hol_bmw", "params": {"alpha": 0.1}}),
-        ),
+        ("ojf".into(), json!({"name": "ojf", "params": {}})),
     ]
 }
 
@@ -730,7 +727,7 @@ pub fn simulate_screen(
                 m["n"],
                 m["rho"].as_str().unwrap_or(""),
                 m["deadlines"][0].as_str().unwrap_or(""),
-                a["laws"][0]["id"].as_str().unwrap_or(""),
+                a["laws"][0]["id"].as_str().unwrap_or("").replace(',', ";"),
                 a["certified"]["full_category"].as_str().unwrap_or(""),
                 f(&a["certified"]["full_lb_max"]),
                 p["policy"].as_str().unwrap(),

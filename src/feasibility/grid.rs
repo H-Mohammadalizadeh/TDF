@@ -31,12 +31,15 @@ pub struct GridSettings {
     pub shortcut: bool,
     /// Window constraints for every subset of at least two active classes.
     pub all_subsets: bool,
+    /// The visit-gap constraints in the full test (they do not change the
+    /// coefficients).
+    pub gap_rows: bool,
 }
 
 impl GridSettings {
     /// The settings for `n` classes: step 1/2000 up to four classes, 1/1000
     /// up to eight and 1/500 beyond; 128 bits, three sweeps, the symmetry
-    /// shortcut and the declared window subsets.
+    /// shortcut, the declared window subsets and no visit-gap constraints.
     pub fn default_for(n: usize) -> GridSettings {
         let step = if n <= 4 {
             "1/2000"
@@ -51,11 +54,18 @@ impl GridSettings {
             sweeps: 3,
             shortcut: true,
             all_subsets: false,
+            gap_rows: false,
         }
     }
 
+    /// The settings as JSON; `gap_rows` appears only when set, so that the
+    /// records of the test without the visit-gap constraints are unchanged.
     pub fn to_json(&self) -> Value {
-        json!({"step": self.step.to_string(), "bits": self.bits, "sweeps": self.sweeps, "symmetric_shortcut": self.shortcut, "all_subsets": self.all_subsets})
+        let mut v = json!({"step": self.step.to_string(), "bits": self.bits, "sweeps": self.sweeps, "symmetric_shortcut": self.shortcut, "all_subsets": self.all_subsets});
+        if self.gap_rows {
+            v["gap_rows"] = json!(true);
+        }
+        v
     }
 }
 
@@ -219,9 +229,9 @@ fn one_minus(f: f64) -> Q {
 ///   sweep stays above `H`;
 /// * a lower bound `L` in one pass, charging every cell its right end.
 ///
-/// Every double operation is rounded outward. Nothing is truncated: `C`
-/// subtracts from the full mean an integral over `[0, d_i]` only, since no
-/// completion is possible after the deadline.
+/// Every double operation is rounded outward. Nothing is truncated: both
+/// enclosures of `C` integrate over `[0, d_i]` only and take the part beyond
+/// the deadline from the full mean, since no completion is possible after it.
 #[allow(clippy::too_many_arguments)]
 fn target_result(
     model: &Model,
@@ -361,20 +371,40 @@ fn target_result(
         b_lo[j] = one_minus(u[j][mi]);
         b_hi[j] = one_minus(l[j][mi]);
     }
+    // C = int_0^inf P(tau > r)(1 - H(d - r)) dr has two enclosures, and each end keeps the
+    // tighter one. The full form subtracts the integral of P(tau > r) H(d - r) over [0, d] from
+    // the mean: it is tight when the support points lie on the grid, but for a continuous
+    // distribution its cell-end error, of order g, can exceed C itself when reconfiguration is
+    // short. The cell form integrates over [0, d] cell by cell with nonnegative terms and adds
+    // the part beyond the deadline, E[(tau - d)^+], enclosed as the mean minus the integral of
+    // P(tau > r) over [0, d].
     let mut c_lo = vec![vec![Q::zero(); n]; n];
     let mut c_hi = vec![vec![Q::zero(); n]; n];
     for (uu, v) in model.edges() {
         let t = &tables[law_of[uu][v]];
-        let mut sum_up = 0.0f64;
-        let mut sum_dn = 0.0f64;
+        let (mut sum_up, mut sum_dn) = (0.0f64, 0.0f64);
+        let (mut cell_dn, mut cell_up) = (0.0f64, 0.0f64);
+        let (mut head_up, mut head_dn) = (0.0f64, 0.0f64);
         for m in 0..mi {
             sum_up = add_up(sum_up, mul_up(t.s_hi[m], u[v][mi - m]));
             sum_dn = add_dn(sum_dn, mul_dn(t.s_lo[m + 1], l[v][mi - m - 1]));
+            // on [m g, (m + 1) g): P(tau > r) in [s(m + 1), s(m)], 1 - H(d - r) in [1 - U, 1 - L]
+            let miss_dn = (1.0 - u[v][mi - m]).next_down().max(0.0);
+            let miss_up = (1.0 - l[v][mi - m - 1]).next_up().min(1.0);
+            cell_dn = add_dn(cell_dn, mul_dn(t.s_lo[m + 1], miss_dn));
+            cell_up = add_up(cell_up, mul_up(t.s_hi[m], miss_up));
+            head_up = add_up(head_up, t.s_hi[m]);
+            head_dn = add_dn(head_dn, t.s_lo[m + 1]);
         }
-        let int_up = step * Q::from_float(sum_up).expect("finite");
-        let int_dn = step * Q::from_float(sum_dn).expect("finite");
-        c_lo[uu][v] = (&t.mean.0 - int_up).max(Q::zero());
-        c_hi[uu][v] = (&t.mean.1 - int_dn).max(Q::zero());
+        let times_step = |x: f64| step * Q::from_float(x).expect("finite");
+        let full_lo = &t.mean.0 - times_step(sum_up);
+        let full_hi = &t.mean.1 - times_step(sum_dn);
+        let tail_lo = (&t.mean.0 - times_step(head_up)).max(Q::zero());
+        let tail_hi = (&t.mean.1 - times_step(head_dn)).max(Q::zero());
+        let cell_lo = times_step(cell_dn) + tail_lo;
+        let cell_hi = times_step(cell_up) + tail_hi;
+        c_lo[uu][v] = full_lo.max(cell_lo).max(Q::zero());
+        c_hi[uu][v] = full_hi.min(cell_hi).max(Q::zero());
     }
     let (service_lo, service_hi) = exp_neg(&(&model.mu[i] * &model.d[i]), bits);
     let width = |lo: &Q, hi: &Q| to_f64(&(hi - lo));
@@ -545,7 +575,7 @@ pub fn grid_coefficient_key(model: &Model, settings: &GridSettings) -> String {
         edges.insert(format!("{u},{v}"), model.law(u, v).to_json());
     }
     let v = json!({
-        "version": 1, "grid": true,
+        "version": 2, "grid": true,
         "mu": model.mu.iter().map(|x| x.to_string()).collect::<Vec<_>>(),
         "d": model.d.iter().map(|x| x.to_string()).collect::<Vec<_>>(),
         "edges": edges, "step": settings.step.to_string(), "bits": settings.bits, "sweeps": settings.sweeps
@@ -616,6 +646,7 @@ mod tests {
             sweeps: 2,
             shortcut: true,
             all_subsets: false,
+            gap_rows: false,
         };
         let full = GridSettings {
             shortcut: false,

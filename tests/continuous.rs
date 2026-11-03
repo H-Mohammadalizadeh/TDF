@@ -26,6 +26,7 @@ fn settings(step: &str, sweeps: usize) -> GridSettings {
         sweeps,
         shortcut: true,
         all_subsets: false,
+        gap_rows: false,
     }
 }
 
@@ -189,6 +190,7 @@ fn a_time_budget_with_an_enclosed_mean_produces_two_rows() {
         model: &shell,
         coef: &lo,
         windows: &windows,
+        gaps: None,
     };
     let r = build(&ing, Level::Full, Objective::Feasibility);
     let labels: Vec<&str> = r.lp.rows.iter().map(|row| row.label.as_str()).collect();
